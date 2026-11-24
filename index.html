@@ -675,6 +675,18 @@
       #btn-rank-name-save{ flex:0 0 auto; width:auto; min-height:44px; padding:8px 16px; font-size:14px; }
       #rank-name-status{ font-size:12px; font-weight:700; color:var(--good); min-height:16px; margin-top:5px; }
       #rank-name-status.ng{ color:var(--danger); }
+      /* 詳細画面内のニックネーム編集（ランキング画面の名前編集と同じ見た目・挙動） */
+      #detail-name-card{ margin-top:10px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); text-align:left; }
+      #detail-name-card .rn-lab{ font-size:11px; font-weight:800; color:var(--muted); letter-spacing:.06em; margin-bottom:6px; }
+      #detail-name-row{ display:flex; gap:8px; }
+      #detail-name-input{
+        flex:1 1 auto; min-width:0; font:inherit; font-size:15px; font-weight:700; color:var(--ink);
+        border:1.5px solid var(--line); border-radius:8px; padding:8px 10px; min-height:44px;
+        user-select:text; -webkit-user-select:text; background:var(--panel);
+      }
+      #btn-detail-name-save{ flex:0 0 auto; width:auto; min-height:44px; padding:8px 16px; font-size:14px; }
+      #detail-name-status{ font-size:12px; font-weight:700; color:var(--good); min-height:16px; margin-top:5px; }
+      #detail-name-status.ng{ color:var(--danger); }
       #rank-status{ font-size:12.5px; font-weight:700; color:var(--muted); min-height:18px; margin-top:8px; line-height:1.5; }
       #rank-status.ng{ color:var(--danger); }
       /* 一覧全体をビルの断面（立面）に見立てる: 重たいグレーの太いスラブと柱で
@@ -1269,6 +1281,14 @@
           </div>
           <div class="small-note" style="margin-bottom:2px; font-size:10px;">形と外観は見た目のみで、数値には影響しません。</div>
           <div class="cmp" id="res-cmp"></div>
+          <div id="detail-name-card">
+            <div class="rn-lab">ニックネーム（8文字まで）</div>
+            <div id="detail-name-row">
+              <input type="text" id="detail-name-input" maxlength="8" autocomplete="off" placeholder="建築家カバ42" />
+              <button class="btn teal" id="btn-detail-name-save">保存</button>
+            </div>
+            <div id="detail-name-status"></div>
+          </div>
           <button class="btn ghost" id="btn-back-result">← タワーに戻る</button>
           </div>
         </div>
@@ -1287,7 +1307,7 @@
         <div class="card" id="rank-name-card">
           <div class="rn-lab">ニックネーム（8文字まで）</div>
           <div id="rank-name-row">
-            <input type="text" id="rank-name-input" maxlength="8" autocomplete="off" placeholder="名無しの建築家" />
+            <input type="text" id="rank-name-input" maxlength="8" autocomplete="off" placeholder="建築家カバ42" />
             <button class="btn teal" id="btn-rank-name-save">保存</button>
           </div>
           <div id="rank-name-status"></div>
@@ -3546,17 +3566,65 @@
           return nid;
         }catch(e){ return "anon-" + Math.random().toString(36).slice(2, 12); }
       }
+      /* デフォルト名は固定の「名無しの建築家」をやめ、端末ごとにランダム生成する:
+         「建築家」＋動物（2〜3文字）＋2桁数字で、必ず8文字以内（サーバー上限）に収める。
+         生成は初回だけ行い、既存の保存キー（RANK_NAME_KEY）に保存して以後使い回す。
+         旧デフォルト「名無しの建築家」が保存済みの端末は、デフォルトのまま
+         変えていない人とみなしてランダム名へ置き換える。自分で設定した名前は変えない */
+      var RANK_ANIMALS = ["カバ","ゾウ","ウマ","シカ","クマ","トラ","ウシ","イヌ","ネコ","サル","タヌキ","キツネ","パンダ","コアラ","ウサギ","リス","カメ","ヒツジ","ブタ","ヤギ","カエル","モグラ","ラッコ","アシカ"];
+      function rankRandomName(){
+        var a = RANK_ANIMALS[Math.floor(Math.random() * RANK_ANIMALS.length)];
+        var num = Math.floor(Math.random() * 90) + 10;   /* 10〜99の2桁 */
+        return ("建築家" + a + num).slice(0, 8);
+      }
       function rankNickname(){
         try{
           var n = localStorage.getItem(RANK_NAME_KEY);
           n = (n || "").trim().slice(0, 8);
-          return n || RANK_DEFAULT_NAME;
-        }catch(e){ return RANK_DEFAULT_NAME; }
+          if (!n || n === RANK_DEFAULT_NAME){
+            n = rankRandomName();
+            try{ localStorage.setItem(RANK_NAME_KEY, n); }catch(e){}
+          }
+          return n;
+        }catch(e){ return rankRandomName(); }
       }
       function rankSaveNickname(n){
-        n = (n || "").replace(/<[^>]*>/g, "").trim().slice(0, 8) || RANK_DEFAULT_NAME;
+        n = (n || "").replace(/<[^>]*>/g, "").trim().slice(0, 8);
+        if (!n || n === RANK_DEFAULT_NAME) n = rankRandomName();
         try{ localStorage.setItem(RANK_NAME_KEY, n); }catch(e){}
         return n;
+      }
+      /* 読み込み時点で初回生成と旧デフォルトの置き換えを済ませる */
+      try{ rankNickname(); }catch(e){}
+      /* 名前を使う入力欄（ランキング画面／結果の詳細画面）を現在の名前に揃える */
+      function syncNicknameInputs(name){
+        var nm = name || rankNickname();
+        var a = $("rank-name-input"), b = $("detail-name-input");
+        if (a) a.value = nm;
+        if (b) b.value = nm;
+        return nm;
+      }
+      /* 名前の保存処理（ランキング画面・詳細画面で共用）: ローカル保存 →
+         既存の POST /name でサーバー側の自分の記録の名前も更新する。
+         通信に失敗してもゲームは止めない */
+      function saveNicknameFromInput(inp, st, onSuccess){
+        var name = rankSaveNickname(inp ? inp.value : "");
+        syncNicknameInputs(name);
+        if (!st) return;
+        st.classList.remove("ng");
+        st.textContent = "保存中…";
+        rankFetch("/name", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ player_id: rankPlayerId(), nickname: name })
+        }).then(function(){
+          st.textContent = "保存しました。";
+          sndBuy();
+          if (onSuccess) onSuccess();
+        }).catch(function(){
+          st.textContent = "この端末には保存しました（サーバーへの反映は通信できる時に行われます）。";
+          st.classList.add("ng");
+        });
       }
       function rankSentBest(){
         try{ var v = parseInt(localStorage.getItem(RANK_SENT_KEY) || "0", 10); return isNaN(v) ? 0 : v; }
@@ -3723,8 +3791,7 @@
         });
       }
       function openRanking(){
-        var inp = $("rank-name-input");
-        if (inp) inp.value = rankNickname();
+        syncNicknameInputs();
         var ns = $("rank-name-status");
         if (ns){ ns.textContent = ""; ns.classList.remove("ng"); }
         show("ranking");
@@ -4128,8 +4195,10 @@
 
         var group = new THREE.Group();
         rscene.add(group);
+        var cityGroup = new THREE.Group();
+        rscene.add(cityGroup);
 
-        rec = { renderer:rr, scene:rscene, camera:rcam, controls:rctrl, sun:sun, group:group, raf:0, open:false };
+        rec = { renderer:rr, scene:rscene, camera:rcam, controls:rctrl, sun:sun, group:group, cityGroup:cityGroup, cityKey:null, raf:0, open:false };
         window.addEventListener("resize", recResize);
       }
       function recDisposeTower(){
@@ -4146,6 +4215,179 @@
           }
         });
         while (rec.group.children.length) rec.group.remove(rec.group.children[0]);
+      }
+      /* ---------- 記録詳細の街並み ----------
+         記録の地区の実測建物（PLATEAU・本編の結果画面と同じ地区データ）を
+         タワー（原点）の周りにそのまま配置し、実測エリアの外側は手続き生成の
+         小ビルで地平まで埋める。地面には街区と道路のテクスチャを敷く。
+         spec に元の敷地位置は含まれないため、タワーは地区中心（原点）に立て、
+         足元と重なる実測棟だけを取り除く（元の場所の完全再現はしない）。
+         ランドマーク実物（都庁・サンシャイン60など）も実測棟としてデータに
+         含まれるため、本編のように模型へ差し替えず実測の姿で一緒に現れる。
+         素材は本編の実測棟用・共有ファサードのクローンを使い、共有テクスチャ
+         自体は破棄しない（地面テクスチャだけが記録詳細の自前） */
+      function recDisposeCity(){
+        if (!rec || !rec.cityGroup) return;
+        rec.cityGroup.traverse(function(o){
+          if (o.geometry) o.geometry.dispose();
+          if (o.material){
+            var ms = Array.isArray(o.material) ? o.material : [o.material];
+            ms.forEach(function(mt){
+              if (mt.userData && mt.userData.ownTex && mt.map) mt.map.dispose();
+              mt.dispose();
+            });
+          }
+        });
+        while (rec.cityGroup.children.length) rec.cityGroup.remove(rec.cityGroup.children[0]);
+        rec.cityKey = null;
+      }
+      function recBuildCity(districtName, td){
+        if (!rec || !rec.cityGroup) return;
+        var meta = null;
+        for (var i = 0; i < REAL_DISTRICTS.length; i++){
+          if (REAL_DISTRICTS[i].name === districtName){ meta = REAL_DISTRICTS[i]; break; }
+        }
+        var clearR = Math.max(120, Math.max(td.shape.footW || 0, td.shape.footD || 0) / 2 + 50);
+        var cacheKey = (meta ? meta.key : "none") + ":" + Math.round(clearR / 30);
+        if (rec.cityKey === cacheKey && rec.cityGroup.children.length) return;
+        recDisposeCity();
+        /* 地区ごとの固定シード乱数（開くたびに同じ街並みにする） */
+        var seed = 2166136261, seedStr = meta ? meta.key : "none";
+        for (var si = 0; si < seedStr.length; si++) seed = Math.imul(seed ^ seedStr.charCodeAt(si), 16777619);
+        function srnd(){
+          seed = (seed + 0x6D2B79F5) >>> 0;
+          var t = seed;
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        }
+        function srand(a, b){ return a + srnd() * (b - a); }
+        /* --- 地面: 街区と道路のキャンバステクスチャ（半径1500mの円盤） --- */
+        try{
+          var cv = document.createElement("canvas"); cv.width = cv.height = 1024;
+          var g2 = cv.getContext("2d");
+          g2.fillStyle = "#c3c9cd"; g2.fillRect(0, 0, 1024, 1024);
+          /* キャンバス1024px＝直径3000m（1px≒2.9m）。街区は約90〜165m間隔、
+             道路幅は約12〜20mで実寸感に合わせる */
+          var lines = [], lp0 = -30;
+          while (lp0 < 1060){ lines.push(lp0); lp0 += 30 + srnd() * 26; }
+          g2.fillStyle = "#9aa1a6";
+          lines.forEach(function(lp){
+            var wpx = 4 + srnd() * 3;
+            g2.fillRect(lp, 0, wpx, 1024);
+            g2.fillRect(0, lp, 1024, wpx);
+          });
+          g2.fillStyle = "#a9c69a";
+          for (var pk = 0; pk < 7; pk++) g2.fillRect(srnd() * 990, srnd() * 990, 14 + srnd() * 20, 14 + srnd() * 20);
+          var gtex = new THREE.CanvasTexture(cv);
+          if (THREE.SRGBColorSpace !== undefined) gtex.colorSpace = THREE.SRGBColorSpace;
+          gtex.anisotropy = 4;
+          var gmat = new THREE.MeshStandardMaterial({ map:gtex, roughness:0.95 });
+          gmat.userData.ownTex = true;
+          var gmesh = new THREE.Mesh(new THREE.CircleGeometry(1500, 48), gmat);
+          gmesh.rotation.x = -Math.PI / 2;
+          gmesh.position.y = 0.04;
+          gmesh.receiveShadow = true;
+          rec.cityGroup.add(gmesh);
+        }catch(e){ /* 地面テクスチャが無くてもビル群は出す */ }
+        /* --- 実測建物（地区データ）: 本編と同じ押し出し＋共有ファサードで、
+               2素材に振り分けて結合しドローコールを抑える --- */
+        var rCore = 260;
+        if (meta && meta.data){
+          try{
+            var fmats = ensureRealFacadeMats();
+            var cmats = fmats.map(function(m){
+              var c = m.clone();
+              c.emissiveIntensity = ENV_PRESETS[0].lit;   /* 記録詳細は昼固定なので点灯は昼の値 */
+              return c;
+            });
+            var buckets = [[], []];
+            var all = [];
+            (meta.data.buildings || []).forEach(function(b){ all.push(b); });
+            (meta.data.zb || []).forEach(function(b){ all.push(b); });
+            all.forEach(function(b, bi){
+              var cx = 0, cy = 0;
+              b.p.forEach(function(pt){ cx += pt[0]; cy += pt[1]; });
+              cx /= b.p.length; cy /= b.p.length;
+              var radB = Math.hypot(cx, cy);
+              if (radB > rCore) rCore = radB;
+              if (radB < clearR) return;   /* タワーの足元は空ける */
+              try{ buckets[bi % 3 === 0 ? 1 : 0].push(extrudeBuildingGeo(b.p, b.h)); }
+              catch(e){
+                var xs = b.p.map(function(pt){ return pt[0]; }), ys = b.p.map(function(pt){ return pt[1]; });
+                var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+                var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+                var bg = new THREE.BoxGeometry(Math.max(x1 - x0, 1), b.h, Math.max(y1 - y0, 1));
+                bg.translate((x0 + x1) / 2, b.h / 2, -(y0 + y1) / 2);
+                buckets[bi % 3 === 0 ? 1 : 0].push(bg.toNonIndexed ? bg.toNonIndexed() : bg);
+              }
+            });
+            buckets.forEach(function(list, bi2){
+              if (!list.length) return;
+              var mesh = new THREE.Mesh(mergeExtrudeGeos(list), cmats[bi2]);
+              mesh.receiveShadow = true;
+              rec.cityGroup.add(mesh);
+            });
+          }catch(e){ /* 実測棟が出なくても補完ビルとタワーは出す */ }
+        }
+        /* --- 補完ビル: 実測エリアの外〜半径1450mを InstancedMesh で埋める
+               （タイトル画面の街と同じ手法。衝突回避は空間ハッシュ） --- */
+        try{
+          var fMats = [0x9aa7b1, 0x8b98a3, 0xb0b8ba, 0x7e8fa0].map(function(c){
+            return new THREE.MeshStandardMaterial({ color:c, roughness:0.85, metalness:0.08 });
+          });
+          var perMat = [[], [], [], []];
+          var placed = [], grid = {}, GCELL = 64;
+          function gKey(gx, gz){ return gx + "," + gz; }
+          function gridNear(x, z, cr){
+            var range = Math.ceil((cr + 34) / GCELL);
+            var gx = Math.floor(x / GCELL), gz = Math.floor(z / GCELL);
+            for (var ix = gx - range; ix <= gx + range; ix++){
+              for (var iz = gz - range; iz <= gz + range; iz++){
+                var cell = grid[gKey(ix, iz)];
+                if (!cell) continue;
+                for (var k = 0; k < cell.length; k++){
+                  var pp = placed[cell[k]];
+                  if (Math.hypot(x - pp.x, z - pp.z) < cr + pp.r) return true;
+                }
+              }
+            }
+            return false;
+          }
+          var r0 = Math.max(rCore - 40, clearR + 60);
+          var tries = 0;
+          while (placed.length < 650 && tries++ < 40000){
+            var rad = r0 + Math.pow(srnd(), 0.8) * (1450 - r0);
+            var ang = srnd() * Math.PI * 2;
+            var x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
+            var w = srand(17, 38), d = srand(17, 38);
+            var bh = 16 + Math.pow(srnd(), 1.7) * 120;
+            if (srnd() < 0.05) bh += srand(50, 110);
+            var cr = Math.hypot(w, d) / 2 + 4;
+            if (gridNear(x, z, cr)) continue;
+            placed.push({ x:x, z:z, r:cr });
+            var gk = gKey(Math.floor(x / GCELL), Math.floor(z / GCELL));
+            (grid[gk] = grid[gk] || []).push(placed.length - 1);
+            perMat[placed.length % fMats.length].push({ x:x, z:z, w:w, d:d, h:bh, rot:(srnd() < 0.5 ? 0 : Math.PI / 2) + srand(-0.05, 0.05) });
+          }
+          var boxGeo = new THREE.BoxGeometry(1, 1, 1);
+          var mtx = new THREE.Matrix4(), quat = new THREE.Quaternion(), eul = new THREE.Euler(),
+              scl = new THREE.Vector3(), pos = new THREE.Vector3();
+          perMat.forEach(function(list, mi){
+            if (!list.length) return;
+            var im = new THREE.InstancedMesh(boxGeo, fMats[mi], list.length);
+            list.forEach(function(r, ii){
+              eul.set(0, r.rot, 0); quat.setFromEuler(eul);
+              scl.set(r.w, r.h, r.d); pos.set(r.x, r.h / 2, r.z);
+              mtx.compose(pos, quat, scl);
+              im.setMatrixAt(ii, mtx);
+            });
+            im.instanceMatrix.needsUpdate = true;
+            im.receiveShadow = true;
+            rec.cityGroup.add(im);
+          });
+        }catch(e){ /* 補完ビルが無くても実測の街並みは出す */ }
+        rec.cityKey = cacheKey;
       }
       function recResize(){
         if (!rec || !rec.renderer) return;
@@ -4165,7 +4407,9 @@
         var hfov = 2 * Math.atan(Math.tan(vfov / 2) * aspect);
         var h = td.height;
         var needH = (h * 0.58) / Math.tan(vfov / 2);
-        var needW = (Math.max(td.shape.footW, td.shape.footD) * 0.72 + 40) / Math.tan(hfov / 2);
+        /* 横方向はタワーの足元幅だけでなく、足元の街並み（±250m）も一緒に
+           収まる幅を最低限確保する。高さ2,000m超では従来通り高さ側が支配的 */
+        var needW = Math.max(Math.max(td.shape.footW, td.shape.footD) * 0.72 + 40, 250) / Math.tan(hfov / 2);
         var dist = Math.max(needH, needW) * 1.05 + h * 0.06;
         var ty = h * 0.42;
         rec.controls.target.set(0, ty, 0);
@@ -4182,7 +4426,7 @@
         }catch(e){ /* 記録詳細の描画失敗で本体に影響させない */ }
         rec.raf = requestAnimationFrame(recTick);
       }
-      function startRecordView(td){
+      function startRecordView(td, districtName){
         var noEl = $("record-nodata"), hintEl = $("record-hint");
         try{
           recInit3D();
@@ -4192,6 +4436,8 @@
           recDisposeTower();
           var grp = specTowerGroup({ shape:td.shape, look:td.look, height:td.height });
           rec.group.add(grp);
+          /* タワーの周りに記録の地区の街並みを出す（失敗してもタワーは見せる） */
+          try{ recBuildCity(districtName, td); }catch(e){}
           var pad = new THREE.Mesh(
             new THREE.BoxGeometry(1, 2, 1),
             new THREE.MeshStandardMaterial({ color:0x6e7a88, roughness:0.7 })
@@ -4201,7 +4447,7 @@
           pad.castShadow = true; pad.receiveShadow = true;
           rec.group.add(pad);
           var sc = rec.sun.shadow.camera;
-          var R = Math.max(td.shape.footW, td.shape.footD) / 2 + 200;
+          var R = Math.max(td.shape.footW, td.shape.footD) / 2 + 620;   /* タワーの影が足元の街並みに落ちる範囲まで広げる */
           sc.left = -R; sc.right = R; sc.top = td.height + 300; sc.bottom = -200; sc.far = 9000;
           sc.updateProjectionMatrix();
           rec.controls.autoRotate = !REDUCED;
@@ -4236,7 +4482,7 @@
         $("rec-look").textContent = (td && td.look && td.look.name) ? td.look.name : "—";
         show("record");
         if (td){
-          startRecordView(td);
+          startRecordView(td, en.district);
         } else {
           /* spec の無い旧記録: でっち上げの建物は出さず、統計だけ見せる */
           stopRecordView();
@@ -9740,6 +9986,9 @@
       $("btn-detail").addEventListener("click", function(){
         sndClick();
         moveViewToDetail();
+        syncNicknameInputs();   /* 詳細画面の名前欄に現在のニックネームを入れる */
+        var dSt = $("detail-name-status");
+        if (dSt){ dSt.textContent = ""; dSt.classList.remove("ng"); }
         show("detail");
         refitAfterMove();
       });
@@ -9855,23 +10104,13 @@
         loadRanking();
       });
       $("btn-rank-name-save").addEventListener("click", function(){
-        var inp = $("rank-name-input"), st = $("rank-name-status");
-        var name = rankSaveNickname(inp ? inp.value : "");
-        if (inp) inp.value = name;
-        st.classList.remove("ng");
-        st.textContent = "保存中…";
-        rankFetch("/name", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ player_id: rankPlayerId(), nickname: name })
-        }).then(function(){
-          st.textContent = "保存しました。";
-          sndBuy();
+        saveNicknameFromInput($("rank-name-input"), $("rank-name-status"), function(){
           loadRanking();   /* 一覧の表示名も更新する */
-        }).catch(function(){
-          st.textContent = "この端末には保存しました（サーバーへの反映は通信できる時に行われます）。";
-          st.classList.add("ng");
         });
+      });
+      /* 詳細画面の名前保存も、ランキング画面とまったく同じ処理を使う */
+      $("btn-detail-name-save").addEventListener("click", function(){
+        saveNicknameFromInput($("detail-name-input"), $("detail-name-status"), null);
       });
 
       /* ================= タイトル画面のライブ3D（アンビエント） =================
