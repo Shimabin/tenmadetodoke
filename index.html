@@ -664,6 +664,24 @@
         background:var(--gold-bg); border:1.5px solid var(--gold); border-radius:10px; color:var(--ink);
       }
       #rank-mine .rm-sub{ display:block; font-size:11px; font-weight:700; color:var(--muted); margin-top:1px; }
+      /* 自分の行が一覧内にある時だけ、バナーはタップで自分の行へジャンプできる。
+         誘導は小さなピル型ラベル（.rm-jump）で示し、バナー全体をボタン化はしない */
+      #rank-mine.jumpable{ cursor:pointer; }
+      #rank-mine.jumpable:active{ filter:brightness(.96); }
+      #rank-mine .rm-jump{
+        display:inline-block; margin-top:5px; padding:3px 10px;
+        font-size:11.5px; font-weight:800; line-height:1.3; color:var(--accent);
+        border:1.5px solid var(--accent); border-radius:999px; background:var(--panel);
+      }
+      /* ジャンプ到達後の軽い強調: 自分の行の内側に枠が2回だけ静かに明滅する */
+      @keyframes rkMeFlash{
+        0%, 100%{ box-shadow:inset 0 0 0 0 rgba(0,0,0,0); }
+        50%{ box-shadow:inset 0 0 0 3px var(--accent); }
+      }
+      .rk-row.flash{ animation:rkMeFlash .9s ease-in-out 2; }
+      @media (prefers-reduced-motion: reduce){
+        .rk-row.flash{ animation:none; }
+      }
       #rank-name-card{ margin-top:8px; padding:10px 12px; }
       #rank-name-card .rn-lab{ font-size:11px; font-weight:800; color:var(--muted); letter-spacing:.06em; margin-bottom:6px; }
       #rank-name-row{ display:flex; gap:8px; }
@@ -3543,12 +3561,20 @@
 
       /* ================= グローバルランキング（外部API連携） =================
          保存先は Cloudflare Worker + D1（ゲーム本体は静的のまま）。
-         プレイヤーID・ニックネーム・送信済みベストは専用キーで localStorage に持ち、
+         プレイヤーID・ニックネームは専用キーで localStorage に持ち、
          既存の地区別ベスト記録には一切触れない。通信失敗でもゲームは止めない */
       var RANK_API = "https://tenmadodoke-ranking.shimabin.workers.dev";
       var RANK_PID_KEY = "biru-matenrou-player-id";
       var RANK_NAME_KEY = "biru-matenrou-nickname";
-      var RANK_SENT_KEY = "biru-matenrou-submitted-best";
+      var RANK_SENT_BEST_KEY = "biru-matenrou-submitted-best";
+      /* 送信済みベスト（この端末からランキングへ送信が成功した最高の高さ）。
+         未送信・読み取り失敗時は 0 を返し、その場合は送信を試みる側に倒す */
+      function rankSentBest(){
+        try{
+          var v = parseFloat(localStorage.getItem(RANK_SENT_BEST_KEY));
+          return isNaN(v) ? 0 : v;
+        }catch(e){ return 0; }
+      }
       var RANK_DEFAULT_NAME = "名無しの建築家";
       function rankPlayerId(){
         try{
@@ -3626,10 +3652,6 @@
           st.classList.add("ng");
         });
       }
-      function rankSentBest(){
-        try{ var v = parseInt(localStorage.getItem(RANK_SENT_KEY) || "0", 10); return isNaN(v) ? 0 : v; }
-        catch(e){ return 0; }
-      }
       function rankFetch(path, opts){
         /* タイムアウト付き fetch（対応環境のみ）。失敗は呼び出し側の catch に委ねる */
         var ctrl = null, timer = null;
@@ -3646,9 +3668,13 @@
           return r.json();
         }, function(err){ if (timer) clearTimeout(timer); throw err; });
       }
-      /* 結果確定時の自動登録: 送信済みベストを超えたときだけ送る。
-         成功したら送信済みベストを更新し、詳細画面の統計に順位を出す。
-         失敗したら何も更新しない（次の自己ベスト更新時に再送される） */
+      /* 結果確定時の自動登録: 自己ベストを更新した時だけ送信する。
+         ゲートは「送信済みベスト」（RANK_SENT_BEST_KEY）で判定し、今回の高さが
+         それを超えた場合のみ送る。送信が成功したら送信済みベストを今回の高さに
+         更新するので、同じ記録や低い記録が再送されることはない。
+         応答の順位は詳細画面の統計にそのまま出す。送信は fire-and-forget で、
+         失敗してもゲームは止まらない（失敗時は送信済みベストを更新しないので、
+         次に自己ベストを超えた完成で再送される） */
       function submitToRanking(b){
         try{
           if (!b || !G || !G.district || !G.shape) return;
@@ -3672,7 +3698,8 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
           }).then(function(res){
-            try{ localStorage.setItem(RANK_SENT_KEY, String(b.height)); }catch(e){}
+            /* 送信成功: 送信済みベストを今回の高さに更新する */
+            try{ localStorage.setItem(RANK_SENT_BEST_KEY, String(b.height)); }catch(e){}
             if (res && res.rank){
               var row = $("res-rank-row"), val = $("res-global-rank");
               if (row && val){
@@ -3722,11 +3749,14 @@
         return r <= 10 ? " zone-lounge" : r <= 100 ? " zone-hotel" : r <= 400 ? " zone-office" : " zone-retail";
       }
       var rankLoading = false;
+      var rankMyRank = 0;   /* 直近に取得した自分の順位（未登録・取得失敗時は 0） */
       function loadRanking(){
         if (rankLoading) return;
         rankLoading = true;
         var mineEl = $("rank-mine"), stEl = $("rank-status"), listEl = $("rank-list");
         var bEl = $("rank-building") || listEl;   /* 行は建物（中身）側に描く。箱は透明な器 */
+        rankMyRank = 0;
+        mineEl.classList.remove("jumpable");
         mineEl.innerHTML = "読み込み中…";
         stEl.textContent = ""; stEl.classList.remove("ng");
         bEl.innerHTML = "<div class='rk-empty'>読み込み中…</div>";
@@ -3741,6 +3771,7 @@
           rankEntries = entries;   /* 行タップ→記録詳細・小窓描画で参照する */
           thumbQueue.length = 0;
           var my = data.my;
+          rankMyRank = (my && my.rank) ? my.rank : 0;
           if (my && my.rank){
             mineEl.innerHTML = "あなたは <span class='num'>" + my.rank + "位</span> ／ 全<span class='num'>" + my.total + "人</span>中" +
               "<span class='rm-sub'>自己ベスト " + (my.me ? my.me.height.toLocaleString("ja-JP") : "—") + "m で登録中</span>";
@@ -3781,14 +3812,62 @@
           }
           bEl.innerHTML = html;
           initRankThumbs();   /* 小窓はスクロールで見えた行から遅延描画する */
+          refreshRankMineJump();   /* 自分の行が一覧にあればバナーをジャンプ可能にする */
         }).catch(function(){
           rankLoading = false;
           rankEntries = [];
+          rankMyRank = 0;
+          mineEl.classList.remove("jumpable");
           mineEl.innerHTML = "ランキングを取得できませんでした<span class='rm-sub'>通信状態を確認して、再読み込みか「もどる」を押してください</span>";
           stEl.textContent = "取得に失敗しました。オフラインの可能性があります。";
           stEl.classList.add("ng");
           bEl.innerHTML = "<div class='rk-empty'>一覧を表示できませんでした。</div>";
         });
+      }
+      /* 一覧の中にある自分の行を探す: ハイライト済みの .me 行を優先し、
+         無ければ順位に対応する行（data-idx = 順位-1）を返す。
+         未登録・500位圏外・一覧に無い場合は null（ジャンプしない） */
+      function findMyRankRow(){
+        var bEl = $("rank-building");
+        if (!bEl) return null;
+        var row = bEl.querySelector(".rk-row.me");
+        if (row) return row;
+        if (rankMyRank >= 1 && rankMyRank <= 500){
+          return bEl.querySelector(".rk-row[data-idx='" + (rankMyRank - 1) + "']");
+        }
+        return null;
+      }
+      /* バナーのジャンプ可否を、描画済みの一覧に合わせて更新する（一覧描画後に呼ぶ） */
+      function refreshRankMineJump(){
+        var mineEl = $("rank-mine");
+        if (!mineEl) return;
+        var row = findMyRankRow();
+        mineEl.classList.toggle("jumpable", !!row);
+        var hint = mineEl.querySelector(".rm-jump");
+        if (row && !hint){
+          hint = document.createElement("span");
+          hint.className = "rm-jump";
+          hint.textContent = "自分の記録を見る ▼";
+          mineEl.appendChild(hint);
+        } else if (!row && hint && hint.parentNode){
+          hint.parentNode.removeChild(hint);
+        }
+      }
+      /* バナーのタップで自分の行までスムーズにスクロールする。
+         行は画面の縦中央に寄せるので、下部の固定ボタン行には隠れない。
+         スクロール先はランキング画面の一覧の中だけ（他画面には影響しない） */
+      function jumpToMyRankRow(){
+        var row = findMyRankRow();
+        if (!row) return;
+        var reduce = false;
+        try{ reduce = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }catch(e){}
+        try{ row.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" }); }
+        catch(e){ try{ row.scrollIntoView(); }catch(e2){} }
+        /* 到達後に軽く強調する（既存のハイライトに一時的な枠の明滅を重ねるだけ） */
+        row.classList.remove("flash");
+        void row.offsetWidth;   /* アニメーションを張り直す */
+        setTimeout(function(){ row.classList.add("flash"); }, reduce ? 60 : 500);
+        setTimeout(function(){ row.classList.remove("flash"); }, 2600);
       }
       function openRanking(){
         syncNicknameInputs();
@@ -4134,7 +4213,7 @@
         if (rec && rec.renderer) return;
         var wrap = $("record-view");
         var rr = new THREE.WebGLRenderer({ antialias:true });
-        rr.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        rr.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));   /* 高解像度環境での過剰描画を抑える */
         rr.shadowMap.enabled = true;
         rr.shadowMap.type = THREE.PCFShadowMap;
         if (THREE.SRGBColorSpace !== undefined && "outputColorSpace" in rr) rr.outputColorSpace = THREE.SRGBColorSpace;
@@ -4420,6 +4499,7 @@
       }
       function recTick(){
         if (!rec || !rec.open) return;
+        if (document.hidden){ rec.raf = requestAnimationFrame(recTick); return; }   /* 非表示中は描かない */
         try{
           rec.controls.update();
           rec.renderer.render(rec.scene, rec.camera);
@@ -4543,6 +4623,9 @@
            （離れたら止めてバッテリー・負荷を抑える） */
         if (name === "draw"){ try{ startTitleAmbient(); }catch(e){} try{ startReelLoop(); }catch(e){} }
         else { try{ stopTitleAmbient(); }catch(e){} try{ stopReelLoop(); }catch(e){} }
+        /* 本編3Dの描画ループは建設・詳細画面の間だけ回す（他画面では止めて負荷を落とす） */
+        try{ curScreenName = name; }catch(e){}
+        try{ if (name === "build" || name === "detail") startMainLoop(); else stopMainLoop(); }catch(e){}
       }
       function capBigText(cap){
         /* 下部の大きな表示用: 高さ（mのみ、km併記なし）と階数だけを大きく出す */
@@ -5062,11 +5145,33 @@
         var wrap = $("realmap");
         var pts = {};          /* pointerId -> {x,y} クライアント座標 */
         var startPts = {};     /* pointerId -> {x,y} 押下位置（タップ判定は開始点からの変位で見る） */
+        var downTarget = {};   /* pointerId -> 押下した要素。ポインタキャプチャ中は
+                                  pointerup／click の target が svg に付け替わり、
+                                  区画ポリゴンへ click が届かなくなる（PC・マウスで
+                                  「土地が買えない」不具合の原因。タッチでは合成
+                                  click の宛先が保たれるため症状が出なかった）。
+                                  選択判定はネイティブ click に頼らず、押下時の
+                                  要素を覚えて pointerup 側でタップ判定する */
         var moved = 0, pinchD0 = 0, pinchK0 = 1;
         function nPts(){ return Object.keys(pts).length; }
+        /* タップ確定時の処理（従来の click ハンドラ群と同じ仕様）:
+           区画なら選択／再タップで解除、それ以外なら選択解除 */
+        function handleRmTap(tgt){
+          if (!G) return;
+          if (tgt && tgt.classList && tgt.classList.contains("rz")){
+            var lot = G.lots[parseInt(tgt.getAttribute("data-idx"), 10)];
+            if (!lot || lot.owned) return;
+            if (G.selected === lot.id){ deselectZone(); return; }   /* 選択中の区画をもう一度タップしたら解除（トグル） */
+            G.selected = lot.id; sndClick();
+            renderLand();
+          } else {
+            deselectZone();
+          }
+        }
         svg.addEventListener("pointerdown", function(e){
           pts[e.pointerId] = { x:e.clientX, y:e.clientY };
           startPts[e.pointerId] = { x:e.clientX, y:e.clientY };
+          downTarget[e.pointerId] = e.target;
           try{ svg.setPointerCapture(e.pointerId); }catch(err){}
           if (nPts() === 1) moved = 0;
           if (nPts() === 2){
@@ -5103,11 +5208,27 @@
           }
         });
         function endPt(e){
+          var wasSingle = nPts() === 1 && !!pts[e.pointerId];
+          var tgt = downTarget[e.pointerId];
+          var sp = startPts[e.pointerId];
+          var upMoved = moved;
+          /* pointermove が一度も来ない静止クリックでも、離上位置と開始点の
+             変位で最終移動量を確定させる */
+          if (sp) upMoved = Math.max(upMoved, Math.hypot(e.clientX - sp.x, e.clientY - sp.y));
           delete pts[e.pointerId];
           delete startPts[e.pointerId];
+          delete downTarget[e.pointerId];
           if (nPts() === 0){
             wrap.classList.remove("dragging");
-            if (moved > 10) rmDragMark = performance.now();
+            if (e.type === "pointerup" && wasSingle && upMoved <= 10){
+              /* タップ（移動量が小さい押下→離上）: マウスでもタッチでも
+                 ここで選択／解除まで確定させる。直後に発火するネイティブ
+                 click は rmDragMark で抑制し、二重処理（選択→即解除）に
+                 ならないようにする。既存の click ハンドラはプログラムから
+                 の直接 click 等へのフォールバックとして残す */
+              rmDragMark = performance.now();
+              handleRmTap(tgt);
+            } else if (upMoved > 10) rmDragMark = performance.now();
           } else if (nPts() === 1){
             moved = 99; rmDragMark = performance.now();   /* ピンチ明けの1本指をタップ扱いしない */
           }
@@ -5567,6 +5688,7 @@
       var towerMesh = null, towerTop = null, beacon = null, crane = null, siteGroup = null, ttGroup = null;
       var dummyGroup = null, realWorld = null;   /* 周囲の街並み: 通常=ランダムダミー群／リアル=実在建物群 */
       var fillerGroup = null, fillerMats = null, fillerGeoShared = null, fillerCount = 0;
+      var fillerCacheKey = null;   /* 補完街並みのキャッシュキー（地区＋所有区画＋所有重心）。同じ敷地条件では作り直さない */
       var fillerGeosShared = null, fillerShapeStats = null;   /* 補完ビルの形状ジオメトリ群（箱／テーパー／円柱／ウェッジ）と地区別形状内訳 */
       /* 実在モード専用の補完街並み（手続き生成ダミー）。実測建物の外側〜地面の端までを埋める */
       var treesGroup = null, treeCount = 0, parkCount = 0;
@@ -5590,6 +5712,12 @@
       var rainLines = null, rainDrops = [], lastTickMs = 0;
       var dispH = 0;                 /* 現在表示中のタワー高さ m */
       var tickErrShown = false;      /* 3Dエラー表示は1回だけにする */
+      /* 本編3Dの描画ループは、キャンバスが見えている建設・詳細画面の間だけ回す。
+         以前は init3D 以降ずっと回り続け、タイトル（独自ループあり）や土地・
+         ランキング画面でも街全体＋影マップを描き続けていたのが「重さ」の主因。
+         show() が curScreenName を更新し、start/stopMainLoop で出し分ける */
+      var mainLoopOn = false, mainRaf = 0;
+      var curScreenName = "draw";
       /* 結果・詳細画面では3D内の「あなたのタワー ○○m」ラベルを出さない
          （下にランクと高さが書いてあるため冗長）。階数決定・施工中は従来通り出す。
          showResult() で true、enterBuild() で false に戻す */
@@ -6092,7 +6220,7 @@
         if (renderer) return;
         var wrap = $("view3d");
         renderer = new THREE.WebGLRenderer({ antialias:true });
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));   /* 高解像度環境での過剰描画を抑える */
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFShadowMap;
         if (THREE.SRGBColorSpace !== undefined && "outputColorSpace" in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -6518,7 +6646,7 @@
         applyEnv(envCur);
         resize3D();
         window.addEventListener("resize", resize3D);
-        requestAnimationFrame(tick3D);
+        startMainLoop();   /* 現在画面が建設・詳細のときだけ描画ループを回す */
       }
 
       function buildTowerShape(reveal){
@@ -6808,7 +6936,23 @@
       function buildTallFence(totalH){
         if (!tallFenceGroup || !fenceSheetTexG) return;
         tallTotalH = Math.max(totalH, 24);
-        while (tallFenceGroup.children.length) tallFenceGroup.remove(tallFenceGroup.children[0]);
+        /* 前回の筒は外すだけでなくGPUリソースも解放する。以前は remove だけで、
+           段ごとの複製テクスチャ・素材・ジオメトリが施工のたびに蓄積していた。
+           共有の pipeMatG／clampMatG と原テクスチャ fenceSheetTexG は壊さない */
+        var seenGeoF = [], seenTexF = [];   /* ジオメトリ／テクスチャは筒全体で共有するため解放は1回だけ */
+        while (tallFenceGroup.children.length){
+          var fpOld = tallFenceGroup.children[0];
+          tallFenceGroup.remove(fpOld);
+          fpOld.traverse(function(n){
+            if (n.geometry && seenGeoF.indexOf(n.geometry) < 0){ seenGeoF.push(n.geometry); n.geometry.dispose(); }
+            var fms = Array.isArray(n.material) ? n.material : (n.material ? [n.material] : []);
+            fms.forEach(function(fm){
+              if (!fm || fm === pipeMatG || fm === clampMatG) return;
+              if (fm.map && fm.map !== fenceSheetTexG && seenTexF.indexOf(fm.map) < 0){ seenTexF.push(fm.map); fm.map.dispose(); }
+              fm.dispose();
+            });
+          });
+        }
         tallPanels = [];
         var pl = computeSitePlace();   /* 仮囲いはタワーと同じ配置中心に立てる */
         tallFenceGroup.position.set(pl.x, 0, pl.z);
@@ -7204,8 +7348,21 @@
 
       var _v1 = null, _v2 = null;
       var _lastVW = 0, _lastVH = 0;   /* #view3d の直近の描画サイズ（変化検出用） */
+      function startMainLoop(){
+        if (!renderer || mainLoopOn) return;
+        if (curScreenName !== "build" && curScreenName !== "detail") return;
+        mainLoopOn = true;
+        if (mainRaf) cancelAnimationFrame(mainRaf);
+        mainRaf = requestAnimationFrame(tick3D);
+      }
+      function stopMainLoop(){
+        mainLoopOn = false;
+        if (mainRaf){ cancelAnimationFrame(mainRaf); mainRaf = 0; }
+      }
       function tick3D(t){
-        requestAnimationFrame(tick3D);
+        if (!mainLoopOn) return;
+        mainRaf = requestAnimationFrame(tick3D);
+        if (document.hidden) return;   /* 非表示中は描かない（復帰時にそのまま再開） */
         try{
           var tickNow = performance.now();
           var dtRain = Math.min(0.05, Math.max(0, (tickNow - (lastTickMs || tickNow)) / 1000));
@@ -8851,9 +9008,20 @@
         while (realWorld.children.length){
           var ch = realWorld.children[0];
           realWorld.remove(ch);
-          if (ch.geometry) ch.geometry.dispose();
-          /* 実測建物の共有ファサード素材（窓テクスチャ付き）は全地区で使い回すため破棄しない */
-          if (ch.material && !(realFacadeMats && realFacadeMats.indexOf(ch.material) >= 0)) ch.material.dispose();
+          /* グループで組まれたランドマーク等も含め、子孫まで解放する（地区切替時の蓄積防止） */
+          ch.traverse(function(n){
+            if (n.isInstancedMesh && n.dispose) n.dispose();
+            if (n.geometry) n.geometry.dispose();
+            /* 実測建物の共有ファサード素材（窓テクスチャ付き）は全地区で使い回すため破棄しない */
+            var cms = Array.isArray(n.material) ? n.material : (n.material ? [n.material] : []);
+            cms.forEach(function(cm){
+              if (!cm) return;
+              if (realFacadeMats && realFacadeMats.indexOf(cm) >= 0) return;
+              if (cm.map) cm.map.dispose();
+              if (cm.emissiveMap) cm.emissiveMap.dispose();
+              cm.dispose();
+            });
+          });
         }
         /* 実測建物も補完ビルと同じファサード表現（窓＋夜間点灯）で描く。素材は共有2種 */
         var fmats = ensureRealFacadeMats();
@@ -9253,6 +9421,30 @@
       }
       function buildFillerCity(){
         if (!fillerGroup || !fillerMats || !fillerGeoShared || !fillerGeosShared) return;
+        /* 固定要素の使い回し: 補完ビル・街路レイアウト・木は「地区＋所有区画＋
+           所有重心」が同じなら前回の生成をそのまま使う。ランごとに変わるのは
+           抽選・購入の結果だけなので、キーが変わった時だけ作り直す（毎回の
+           再生成〜680棟の配置計算と地面テクスチャ描き直しが開始時の重さの主因） */
+        var fkNow = null;
+        if (G && G.real && G.data && G.lots && G.district){
+          var twK = 0, sxK = 0, syK = 0, zidK = [];
+          G.lots.forEach(function(lot){
+            if (!lot.owned) return;
+            zidK.push(lot.zid);
+            var cc = polyCentroid(lot.polygon);
+            twK += lot.area; sxK += cc[0] * lot.area; syK += cc[1] * lot.area;
+          });
+          if (twK){
+            zidK.sort(function(a, b){ return a - b; });
+            fkNow = G.district.key + "|" + zidK.join(",") + "|" +
+              Math.round(sxK / twK * 10) + "," + Math.round(syK / twK * 10);
+          }
+        }
+        if (fkNow && fkNow === fillerCacheKey && fillerGroup.children.length){
+          fillerGroup.visible = fillerCount > 0;
+          if (treesGroup) treesGroup.visible = treeCount > 0;
+          return;
+        }
         while (fillerGroup.children.length){
           var fc = fillerGroup.children[0];
           fillerGroup.remove(fc);
@@ -9268,7 +9460,7 @@
         }
         treeCount = 0; parkCount = 0;
         fillerCount = 0;
-        if (!G || !G.real || !G.data || !G.lots){ fillerGroup.visible = false; return; }
+        if (!G || !G.real || !G.data || !G.lots){ fillerGroup.visible = false; fillerCacheKey = null; return; }
         var fillT0 = (window.performance && performance.now) ? performance.now() : 0;
         var tw = 0, sx = 0, sy = 0;
         G.lots.forEach(function(lot){
@@ -9276,7 +9468,7 @@
           var c = polyCentroid(lot.polygon);
           tw += lot.area; sx += c[0] * lot.area; sy += c[1] * lot.area;
         });
-        if (!tw){ fillerGroup.visible = false; return; }
+        if (!tw){ fillerGroup.visible = false; fillerCacheKey = null; return; }
         var cx = sx / tw, cy = sy / tw;
         /* 回避ボックス（シーン座標）: 実座標 (x=東, y=北) の外接矩形を (x-cx, cy-y) へ写す */
         var boxes = [];
@@ -9441,6 +9633,7 @@
         fillerShapeStats = { district: G.district.key, total: fillerCount, counts: shapeCounts };
         if (window) window.__fillerStats = fillerShapeStats;
         fillerGroup.visible = fillerCount > 0;
+        if (fkNow) fillerCacheKey = fkNow;   /* 正常に作れた時だけキャッシュを有効化する */
         /* 同じレイアウトから地面（街区・道路・公園）を描き、木を植える（失敗しても本編は続行する） */
         try{ drawStreetTexture(boxes); }catch(e){ /* 地面が無地のままでもタワー建設は続行できる */ }
         try{ buildTrees(boxes, placed); }catch(e){ if (treesGroup) treesGroup.visible = false; }
@@ -9640,14 +9833,21 @@
          2回目以降の建設画面への遷移が際限なく重くなる */
       function disposeMeshDeep(m){
         if (!m) return;
-        if (m.geometry) m.geometry.dispose();
-        var mats = Array.isArray(m.material) ? m.material : (m.material ? [m.material] : []);
-        mats.forEach(function(mt){
-          if (!mt) return;
-          if (towerMats && mt === towerMats.preview) return;   /* 共有プレビュー素材は使い回す */
-          if (mt.map) mt.map.dispose();
-          if (mt.emissiveMap) mt.emissiveMap.dispose();
-          mt.dispose();
+        /* 子孫まで走査して解放する（グループ配下のパーツを取りこぼすと蓄積する）。
+           同一ジオメトリ／素材の二重解放は避ける */
+        var seenGeoD = [], seenMatD = [];
+        m.traverse(function(n){
+          if (n.isInstancedMesh && n.dispose) n.dispose();   /* インスタンスバッファ */
+          if (n.geometry && seenGeoD.indexOf(n.geometry) < 0){ seenGeoD.push(n.geometry); n.geometry.dispose(); }
+          var mats = Array.isArray(n.material) ? n.material : (n.material ? [n.material] : []);
+          mats.forEach(function(mt){
+            if (!mt || seenMatD.indexOf(mt) >= 0) return;
+            seenMatD.push(mt);
+            if (towerMats && mt === towerMats.preview) return;   /* 共有プレビュー素材は使い回す */
+            if (mt.map) mt.map.dispose();
+            if (mt.emissiveMap) mt.emissiveMap.dispose();
+            mt.dispose();
+          });
         });
       }
       function refreshSite3D(){
@@ -9955,7 +10155,7 @@
         $("result").style.display = "flex";
         startEnvReview();   /* 完成レビュー中は昼→夕方→夜→雨が移り変わる */
         if (controls) controls.autoRotate = !REDUCED;
-        /* グローバルランキングへ自動登録（自己ベスト更新時のみ送信・失敗しても結果表示は通常通り） */
+        /* グローバルランキングへ自動登録（完成のたびに送信・サーバーは高い記録だけ保持・失敗しても結果表示は通常通り） */
         try{ submitToRanking(b); }catch(e){}
         /* プレイ計測: 結果画面の表示＝1ラン完了を1回だけ送信 */
         try{ markPlay("finish"); }catch(e){}
@@ -10102,6 +10302,13 @@
       $("btn-rank-reload").addEventListener("click", function(){
         sndClick();
         loadRanking();
+      });
+      /* 自分の順位バナー: 自分の行が一覧内にある時（.jumpable）だけ、
+         タップで自分の行までスクロールする。それ以外はタップしても何もしない */
+      $("rank-mine").addEventListener("click", function(){
+        if (!$("rank-mine").classList.contains("jumpable")) return;
+        sndClick();
+        jumpToMyRankRow();
       });
       $("btn-rank-name-save").addEventListener("click", function(){
         saveNicknameFromInput($("rank-name-input"), $("rank-name-status"), function(){
@@ -10494,7 +10701,7 @@
       function ttlInit(){
         var wrap = $("title-view");
         var tr = new THREE.WebGLRenderer({ antialias:true });
-        tr.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        tr.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));   /* 高解像度環境での過剰描画を抑える */
         tr.shadowMap.enabled = true;
         tr.shadowMap.type = THREE.PCFShadowMap;
         if (THREE.SRGBColorSpace !== undefined && "outputColorSpace" in tr) tr.outputColorSpace = THREE.SRGBColorSpace;
@@ -10569,6 +10776,7 @@
       function ttlTick(){
         if (!ttl || !ttl.running) return;
         ttl.raf = requestAnimationFrame(ttlTick);
+        if (document.hidden) return;   /* 非表示中は描かない（ループ自体は維持し、復帰時にそのまま再開） */
         try{
           var drawScreen = $("screen-draw");
           if (!drawScreen || !drawScreen.classList.contains("on")){ ttl.running = false; return; }
