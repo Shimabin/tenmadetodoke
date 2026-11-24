@@ -4258,6 +4258,8 @@
         sun.position.set(day.sunPos[0], day.sunPos[1], day.sunPos[2]);
         sun.castShadow = true;
         sun.shadow.mapSize.set(2048, 2048);
+        sun.shadow.bias = -0.0002;
+        sun.shadow.normalBias = 2.0;   /* 影の縞（シャドウアクネ）対策。startRecordView がフラスタム実寸に合わせて更新する */
         rscene.add(sun);
         rscene.add(sun.target);
         var rim = new THREE.DirectionalLight(day.rim.getHex(), day.rimInt);
@@ -4530,6 +4532,9 @@
           var R = Math.max(td.shape.footW, td.shape.footD) / 2 + 620;   /* タワーの影が足元の街並みに落ちる範囲まで広げる */
           sc.left = -R; sc.right = R; sc.top = td.height + 300; sc.bottom = -200; sc.far = 9000;
           sc.updateProjectionMatrix();
+          /* 影の縞対策: フラスタムが広い（＝高いタワー）ほどテクセルが粗くなるので、実寸から normalBias を決める */
+          var recTexel = Math.max(2 * R, td.height + 500) / 2048;
+          rec.sun.shadow.normalBias = Math.min(8, Math.max(1.5, recTexel * 2.5 / 0.767));
           rec.controls.autoRotate = !REDUCED;
           rec.open = true;
           recFrameCamera(td);
@@ -6108,7 +6113,14 @@
           if (scene.background && scene.background.copy) scene.background.copy(e.sky);
           if (scene.fog){ scene.fog.color.copy(e.sky); scene.fog.near = e.fogNear; scene.fog.far = e.fogFar; }
           if (hemiLight){ hemiLight.color.copy(e.hemiSky); hemiLight.groundColor.copy(e.hemiGround); hemiLight.intensity = e.hemiInt; }
-          if (sunLight){ sunLight.color.copy(e.sun); sunLight.intensity = e.sunInt; sunLight.position.set(e.sunPos[0], e.sunPos[1], e.sunPos[2]); }
+          if (sunLight){
+            sunLight.color.copy(e.sun); sunLight.intensity = e.sunInt; sunLight.position.set(e.sunPos[0], e.sunPos[1], e.sunPos[2]);
+            /* 影の縞対策: 太陽が低いほど地面に写るテクセルが伸びて縞が強くなるため、
+               太陽高度に反比例させて normalBias を強める（基準テクセル: フラスタム縦1470m÷2048≒0.72m） */
+            var spL = Math.sqrt(e.sunPos[0]*e.sunPos[0] + e.sunPos[1]*e.sunPos[1] + e.sunPos[2]*e.sunPos[2]) || 1;
+            var spY = Math.max(0.25, e.sunPos[1] / spL);
+            sunLight.shadow.normalBias = Math.min(6, 0.72 * 2.5 / spY);
+          }
           if (rimLight){ rimLight.color.copy(e.rim); rimLight.intensity = e.rimInt; }
           if (renderer) renderer.toneMappingExposure = e.exposure;
           if (groundMat){ groundMat.color.copy(e.ground); groundMat.roughness = e.groundRough; groundMat.metalness = e.rain > 0.5 ? 0.35 : 0; }
@@ -6285,6 +6297,8 @@
         sunLight.shadow.camera.left = -320; sunLight.shadow.camera.right = 320;
         sunLight.shadow.camera.top = 1350; sunLight.shadow.camera.bottom = -120;
         sunLight.shadow.camera.far = 3000;
+        sunLight.shadow.bias = -0.0002;
+        sunLight.shadow.normalBias = 2.3;   /* 影の縞（シャドウアクネ）対策の初期値（昼）。applyEnv が太陽高度に合わせて更新する */
         scene.add(sunLight);
         rimLight = new THREE.DirectionalLight(0xbfe0ff, 0.35);
         rimLight.position.set(-260, 140, -200);
@@ -10663,7 +10677,13 @@
           if (ttl.scene.background && ttl.scene.background.copy) ttl.scene.background.copy(e.sky);
           if (ttl.scene.fog){ ttl.scene.fog.color.copy(e.sky); ttl.scene.fog.near = e.fogNear; ttl.scene.fog.far = e.fogFar; }
           if (ttl.hemi){ ttl.hemi.color.copy(e.hemiSky); ttl.hemi.groundColor.copy(e.hemiGround); ttl.hemi.intensity = e.hemiInt; }
-          if (ttl.sun){ ttl.sun.color.copy(e.sun); ttl.sun.intensity = e.sunInt; ttl.sun.position.set(e.sunPos[0], e.sunPos[1], e.sunPos[2]); }
+          if (ttl.sun){
+            ttl.sun.color.copy(e.sun); ttl.sun.intensity = e.sunInt; ttl.sun.position.set(e.sunPos[0], e.sunPos[1], e.sunPos[2]);
+            /* 本編と同じ影の縞対策（基準テクセル: フラスタム縦1170m÷1024≒1.14m） */
+            var tpL = Math.sqrt(e.sunPos[0]*e.sunPos[0] + e.sunPos[1]*e.sunPos[1] + e.sunPos[2]*e.sunPos[2]) || 1;
+            var tpY = Math.max(0.25, e.sunPos[1] / tpL);
+            ttl.sun.shadow.normalBias = Math.min(7, 1.14 * 2.5 / tpY);
+          }
           if (ttl.rim){ ttl.rim.color.copy(e.rim); ttl.rim.intensity = e.rimInt; }
           if (ttl.renderer) ttl.renderer.toneMappingExposure = e.exposure;
           if (ttl.groundMat){ ttl.groundMat.color.copy(e.ground); ttl.groundMat.roughness = e.groundRough; ttl.groundMat.metalness = e.rain > 0.5 ? 0.35 : 0; }
@@ -10741,6 +10761,8 @@
         ttl.sun.shadow.camera.left = -520; ttl.sun.shadow.camera.right = 520;
         ttl.sun.shadow.camera.top = 1050; ttl.sun.shadow.camera.bottom = -120;
         ttl.sun.shadow.camera.far = 3200;
+        ttl.sun.shadow.bias = -0.0002;
+        ttl.sun.shadow.normalBias = 3.3;   /* 影の縞（シャドウアクネ）対策の初期値（昼）。ttlApplyEnv が太陽高度に合わせて更新する */
         tscene.add(ttl.sun);
         tscene.add(ttl.sun.target);
         ttl.rim = new THREE.DirectionalLight(0xbfe0ff, 0.35);
