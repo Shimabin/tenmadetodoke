@@ -3748,6 +3748,53 @@
       function rankZoneCls(r){
         return r <= 10 ? " zone-lounge" : r <= 100 ? " zone-hotel" : r <= 400 ? " zone-office" : " zone-retail";
       }
+      /* ================= 自己修復: サーバー側の自分の行が無いのに、端末にだけ
+         「送信済みベスト」が残っている詰み状態の解消 =================
+         サーバー側で自分の記録行が削除された端末では、送信済みベスト
+         （例: 2408）だけが残り、それ以下の完成ランが通常ルール
+         （送信済みベストを超えた時だけ送信）に弾かれて二度と送信されず、
+         ランキングに永遠に登録されなくなる。そこで /rank の取得に成功し、
+         サーバーが「この player_id の記録なし」を返し、かつ送信済みベストが
+         0より大きい場合に限り、マーカーをリセットする。あわせて、地区別
+         ベストの最大に再送信に必要な項目（高さ・階数・地区・形・spec）が
+         揃っていれば、通常の送信と同じ形式で1回だけ再送信して行を復活させる
+         （揃っていなければリセットだけ行い、次の完成ランで通常どおり登録される）。
+         サーバーに行がある人・新規プレイヤー（マーカー0）には一切発動せず、
+         通信失敗時（my が null）もマーカーには触らない。再送信は1セッション1回だけ */
+      var rankHealTried = false;
+      function rankSelfHeal(my){
+        try{
+          if (rankHealTried) return;
+          if (!my || my.me || my.rank) return;   /* 取得失敗・記録あり は対象外 */
+          if (!(rankSentBest() > 0)) return;     /* 新規プレイヤーは対象外 */
+          rankHealTried = true;
+          try{ localStorage.removeItem(RANK_SENT_BEST_KEY); }catch(e){}
+          var best = null;
+          REAL_DISTRICTS.forEach(function(meta){
+            var b = loadBest(meta.bestKey);
+            if (b && (!best || b.height > best.height)) best = b;
+          });
+          if (!best || !(best.height > 0) || !best.floors || !best.district || !best.shape || !best.spec) return;
+          rankFetch("/submit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              player_id: rankPlayerId(),
+              nickname: rankNickname(),
+              height: best.height,
+              floors: best.floors,
+              district: best.district,
+              shape: best.shape,
+              bug: !!best.bug,
+              spec: best.spec
+            })
+          }).then(function(){
+            /* 通常の送信成功時と同じく、送信済みベストを復活した高さに合わせる */
+            try{ localStorage.setItem(RANK_SENT_BEST_KEY, String(best.height)); }catch(e){}
+            loadRanking();   /* 復活した自分の順位をその場で表示し直す */
+          }).catch(function(){ /* 失敗時: マーカーはリセット済みなので、次の完成ランで通常どおり登録される */ });
+        }catch(e){ /* 自己修復の失敗でゲームを止めない */ }
+      }
       var rankLoading = false;
       var rankMyRank = 0;   /* 直近に取得した自分の順位（未登録・取得失敗時は 0） */
       function loadRanking(){
@@ -3771,6 +3818,7 @@
           rankEntries = entries;   /* 行タップ→記録詳細・小窓描画で参照する */
           thumbQueue.length = 0;
           var my = data.my;
+          rankSelfHeal(my);   /* サーバー行が消えた端末の詰み状態を自己修復（条件を満たす時だけ発動） */
           rankMyRank = (my && my.rank) ? my.rank : 0;
           if (my && my.rank){
             mineEl.innerHTML = "あなたは <span class='num'>" + my.rank + "位</span> ／ 全<span class='num'>" + my.total + "人</span>中" +
@@ -10136,7 +10184,13 @@
         var prev = loadBest(bKey);
         var isRecord = !prev || b.height > prev.height;
         if (isRecord){
-          saveBest({ height:b.height, floors:b.floors, rank:rank, district:G.district.name, bug:!!b.bug, date:new Date().toISOString() }, bKey);
+          /* 形と spec も一緒に保存する: サーバー側の自分の行が消えた端末で
+             ランキング行を復活させる再送信（rankSelfHeal）に必要な項目のため。
+             spec が作れない場合は空文字になり、その場合は再送信せず
+             マーカーのリセットだけが行われる */
+          var bestSpec = "";
+          try{ bestSpec = buildRankSpec(b); }catch(e){ bestSpec = ""; }
+          saveBest({ height:b.height, floors:b.floors, rank:rank, district:G.district.name, shape:(G.shape && G.shape.name) || "", spec:bestSpec, bug:!!b.bug, date:new Date().toISOString() }, bKey);
         }
         var best = loadBest(bKey);
         $("res-best").textContent = best ? (fmtMeters(best.height) + "（ランク " + rankOf(best.height) + "）" + (best.bug ? "【バグ】" : "")) : "—";
