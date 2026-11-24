@@ -1722,6 +1722,9 @@
          珍形（W型／帆型／ハイキック型／DNA型・合計約1.5%）も7ルールの適用外で、
          実在の彫刻的タワーをモチーフに段の積み重ねでシルエットを描く。頭部装飾は
          付けず、不可視壁ガードと敷地フィットは維持する。
+         敷地なぞり型（約7%）は所有地の和集合の輪郭を平面にした角柱を、輪郭を
+         内側へ収縮させながら積む。珍形と同じく選ばれたランでだけ輪郭を計算し、
+         頭部装飾は付けない。敷地フィットは専用の面積上限チェックに置き換わる。
          カテゴリ抽選（通常原型か特殊か）は1ゲームにつき1回だけ行い（rollShapeKind）、抽選時と着工時で
          同じカテゴリを引き継ぐ（外観の専用指定が途中でずれないようにするため）。 */
       var HEAD_DEFS = {
@@ -1768,6 +1771,12 @@
       };
       var ODD_KEYS = ["w", "sail", "kick", "dna"];
       var ODD_RATE = 0.015;   /* 珍形全体の出現率（1〜2%のレア枠） */
+      /* 敷地なぞり型（約7%）: 所有地の和集合の輪郭をそのまま平面にして
+         立ち上げ、内側へ削りながら1〜2回セットバックする。珍形と同じ方式で、
+         抽選で選ばれたランでだけ輪郭計算（computeSitePlans）を行い、選ばれなかった
+         ランでは計算コストゼロ。輪郭が特徴的でない（ほぼ四角い）・細すぎる・
+         小さすぎる敷地では生成を諦め、通常原型（セットバック型）に落とす */
+      var SITE_RATE = 0.07;  /* 敷地なぞり型の出現率（2026-11-24 実プレイで出にくいとの声を受け 2.5%→7% に引き上げ。増加分は通常原型の枠から削る） */
       function pickOdd(){
         return ODD_KEYS[Math.floor(Math.random() * ODD_KEYS.length)];
       }
@@ -1790,12 +1799,13 @@
         if (Math.random() < CLUSTER_RATE / (CLUSTER_RATE + SPECIAL_RATE)) return "cluster";
         return pickSpecial();
       }
-      /* カテゴリ抽選: {odd:id}（珍形・約1.5%）か {special:id}（特殊・約9.5%）か
-         {arch:id}（通常原型）のどれかを返す。1ゲームに1回だけ引く */
+      /* カテゴリ抽選: {odd:id}（珍形・約1.5%）か {site:true}（敷地なぞり型・約7%）か
+         {special:id}（特殊・約9.5%）か {arch:id}（通常原型）のどれかを返す。1ゲームに1回だけ引く */
       function rollShapeKind(){
         var r = Math.random();
         if (r < ODD_RATE) return { odd: pickOdd() };
-        if (r < ODD_RATE + CLUSTER_RATE + SPECIAL_RATE) return { special: pickSpecialAny() };
+        if (r < ODD_RATE + SITE_RATE) return { site: true };
+        if (r < ODD_RATE + SITE_RATE + CLUSTER_RATE + SPECIAL_RATE) return { special: pickSpecialAny() };
         return { arch: pickArchetype() };
       }
       function pickHeadType(arch){
@@ -1840,17 +1850,26 @@
       /* force: {arch:id} / {special:id} / {odd:id} でカテゴリを固定できる（ゲーム内のカテゴリ引き継ぎ用）。省略時は rollShapeKind で抽選する */
       function generateShape(heightM, force, opts){
         var H = (typeof heightM === "number" && heightM > 0) ? heightM : 1000;
-        var special = null, arch = null, odd = null;
+        var special = null, arch = null, odd = null, site = false;
         if (force && force.special) special = force.special;
         else if (force && force.odd) odd = force.odd;
+        else if (force && force.site) site = true;
         else if (force && force.arch) arch = force.arch;
         else {
           var kind0 = rollShapeKind();
           special = kind0.special || null;
           odd = kind0.odd || null;
+          site = !!kind0.site;
           arch = kind0.arch || null;
         }
-        var pencil = !special && !odd && Math.random() < 0.10;
+        /* 敷地なぞり型: 選ばれたランでだけ所有地の輪郭を計算する（重い処理はここだけ）。
+           輪郭が使えない敷地では通常原型（セットバック型）にフォールバックする */
+        var sitePlans = null, siteBaseW = 0, siteBaseD = 0;
+        if (site){
+          try{ sitePlans = computeSitePlans(); }catch(e){ sitePlans = null; }
+          if (!sitePlans){ site = false; arch = "setback"; }
+        }
+        var pencil = !special && !odd && !sitePlans && Math.random() < 0.10;
         var slenderness = pencil ? rand(10, 15) : 5 + Math.pow(Math.random(), 0.55) * 5;
         if (special === "stack") slenderness = rand(5.5, 8.5);        /* 積み箱は太めに */
         else if (special === "cocoon") slenderness = rand(5.5, 8.5);  /* 繭は楕円で太めに */
@@ -1880,8 +1899,8 @@
           slenderness = H / baseW;   /* メタ情報の細長さは実際の幅と一致させる */
         }
         var baseD = baseW * (special === "cocoon" ? rand(0.68, 0.78) : rand(0.88, 1.0));
-        var twin = !special && !odd && Math.random() < 0.12;
-        var hasPodium = !special && !odd && !twin && Math.random() < 0.45;
+        var twin = !special && !odd && !sitePlans && Math.random() < 0.12;
+        var hasPodium = !special && !odd && !sitePlans && !twin && Math.random() < 0.45;
         var podiumFrac = hasPodium ? rand(0.035, 0.075) : 0;
         var podiumRatioW = hasPodium ? rand(0.56, 0.69) : null;
         var podiumRatioD = hasPodium ? rand(0.56, 0.69) : null;
@@ -1904,6 +1923,8 @@
           headFrac = head === "flat" ? rand(0.02, 0.04) : rand(0.05, 0.1);
         } else if (odd){
           head = "flat"; headFrac = 0;   /* 珍形は形そのもので完結させる。頭部装飾の抽選は適用しない（bodyTo=1） */
+        } else if (sitePlans){
+          head = "flat"; headFrac = 0;   /* 敷地なぞり型も輪郭そのもので完結させる（頭部装飾なし・bodyTo=1） */
         } else {
           head = pickHeadTypeStd(arch);   /* 標準原型は装飾あり約30%・フラット約70% */
           headFrac = head === "flat" ? rand(0.02, 0.045) : (head === "antenna" ? rand(0.09, 0.16) : rand(0.08, 0.16));
@@ -2251,6 +2272,39 @@
           info.n = NL;
           return info;
         }
+        /* 敷地なぞり型ビルダー: computeSitePlans が返した輪郭（下段→上段の順の
+           頂点列）を、そのまま平面にした角柱（kind:"poly"）として積む。
+           セットバックは輪郭の内側オフセット（収縮）で作ってあるため、上の段が
+           下の段からはみ出すことはない。頭部装飾は付けない（bodyTo=1） */
+        function buildSiteTower(plans){
+          var tiers = [];
+          var info = { cx:0, cz:0, tiers:tiers, top:null, n:plans.length, twistTotalDeg:0 };
+          var n = plans.length, weights = [];
+          if (n === 1) weights = [1];
+          else if (n === 2){ var sw0 = rand(0.54, 0.64); weights = [sw0, 1 - sw0]; }
+          else { var sa = rand(0.40, 0.50), sb = rand(0.27, 0.35); weights = [sa, sb, Math.max(0.12, 1 - sa - sb)]; }
+          var tint0 = rand(0.92, 1.05);
+          var cur = 0;
+          plans.forEach(function(plan, i){
+            var to = (i === n - 1) ? 1 : cur + weights[i];
+            var mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
+            plan.forEach(function(v){
+              if (v[0] < mnx) mnx = v[0];
+              if (v[0] > mxx) mxx = v[0];
+              if (v[1] < mnz) mnz = v[1];
+              if (v[1] > mxz) mxz = v[1];
+            });
+            var cxp = (mnx + mxx) / 2, czp = (mnz + mxz) / 2;
+            var rel = plan.map(function(v){ return [v[0] - cxp, v[1] - czp]; });
+            var bp = addPart({ kind:"poly", role:"tier", tower:0, tier:i,
+              x:cxp, z:czp, w:mxx - mnx, d:mxz - mnz, from:cur, to:to, rot:0, plan:rel, tint:tint0 });
+            tiers.push({ w:mxx - mnx, d:mxz - mnz, x:cxp, z:czp, rotDeg:0 });
+            info.top = { x:cxp, z:czp, w:mxx - mnx, d:mxz - mnz, rot:0, tint:bp.tint };
+            if (i === 0){ siteBaseW = mxx - mnx; siteBaseD = mxz - mnz; }
+            cur = to;
+          });
+          return info;
+        }
         /* 珍形ビルダー: 実在の彫刻的タワーをモチーフにした4種（W型／帆型／
            ハイキック型／DNA型）を、段（箱・角錐台）の積み重ねで近似する。
            特殊建築と同じく7ルールの適用外だが、生成後ガード（不可視壁対策）と
@@ -2408,6 +2462,13 @@
           segN = mainInfo.n || 1;
           towersMeta.push({ cx:0, cz:0, tiers:mainInfo.tiers, ratios:[], ratiosD:[],
             twistDir:0, twistStepDeg:0, twistTotalDeg:0, topRatio:0 });
+        } else if (sitePlans){
+          mainInfo = buildSiteTower(sitePlans);
+          segN = mainInfo.n || 1;
+          towersMeta.push({ cx:0, cz:0, tiers:mainInfo.tiers, ratios:[], ratiosD:[],
+            twistDir:0, twistStepDeg:0, twistTotalDeg:0, topRatio:0 });
+          baseW = siteBaseW; baseD = siteBaseD;   /* 足元幅は輪郭の下段に合わせる */
+          if (baseW > 0) slenderness = H / baseW;
         } else if (twin){
           var plan = makePlan();
           segN = plan.n;
@@ -2429,7 +2490,7 @@
           mainInfo = buildTower(0, 0, bodyTo, plan2, 0);
           towersMeta.push(metaOf(mainInfo, plan2));
         }
-        if (special !== "cocoon" && !odd) buildHead(mainInfo.top, bodyTo, 1);   /* 繭は層カーブで閉じ、珍形は形そのもので完結するため頭パーツなし */
+        if (special !== "cocoon" && !odd && !sitePlans) buildHead(mainInfo.top, bodyTo, 1);   /* 繭は層カーブで閉じ、珍形・敷地なぞり型は形そのもので完結するため頭パーツなし */
         /* 生成後ガード: すべてのパーツ（王冠の柱・梁などの装飾 fitting を含む）に、
            「壁状セグメント」化を防ぐ2段の下限を設ける。
            ①幅/奥行きの比率は 0.25 以上（片軸だけ潰れたら小さい方の軸を引き上げる）
@@ -2437,6 +2498,7 @@
              max(7m, 高さ÷18) 以上になるよう引き上げる。王冠の柱・梁は以前ここで
              対象外だったため、断面3〜10mのまま100m超の高さで立ち「見えない壁」に見えた */
         parts.forEach(function(p){
+          if (p.kind === "poly") return;   /* 敷地なぞり型の輪郭は太らせると形が崩れる。薄さ対策は輪郭計算側（収縮の下限）で済ませてある */
           if (p.crownGlass) return;   /* 王冠のガラスパネルは意図した薄板なので太らせない */
           var segHm = (p.to - p.from) * H;
           var minAxis = segHm > 30 ? Math.max(7, segHm / 18) : 0;
@@ -2480,7 +2542,10 @@
         /* 生成名: 通常は原型＋頭（＋ツイン／ペンシル／ポディウム）、特殊は「特殊：」、
            珍形は「珍形：」を付ける（結果・詳細・シェアはこの名前を表示） */
         var feat, genName;
-        if (odd){
+        if (sitePlans){
+          feat = "敷地なぞり型";
+          genName = feat;
+        } else if (odd){
           feat = "珍形：" + ODD_DEFS[odd].label;
           genName = feat;
         } else if (special){
@@ -2497,7 +2562,8 @@
         }
         return {
           name: genName, widthMul: baseW / 41.6, twin: twin, podium: hasPodium,
-          head: head, headLabel: HEAD_DEFS[head].label, archetype: special || (odd ? "odd-" + odd : arch), special: special, odd: odd,
+          head: head, headLabel: HEAD_DEFS[head].label, archetype: special || (odd ? "odd-" + odd : (sitePlans ? "site" : arch)), special: special, odd: odd,
+          site: !!sitePlans, siteNative: !!sitePlans,
           pencil: pencil, slenderness: slenderness, designHeight: H,
           baseW: baseW, baseD: baseD,
           meta: { towers: towersMeta, podiumRatioW: podiumRatioW, podiumRatioD: podiumRatioD, headTopW: mainInfo.top.w, headTopD: mainInfo.top.d },
@@ -2512,7 +2578,9 @@
          metalness は全種 0.4 以下に抑え、空の反射（scene.environment）で面を持ち上げる。
          style: curtain=ガラス全面 / frame=壁主体＋開口部 / metal=金属パネル＋縦フィン / brick=レンガ目地
                 vfin=縦フィン（細い縦フィンが密に並ぶ）/ vstripe=縦ストライプ（太い壁帯とガラス帯が交互）。
-                vfin・vstripe は縦が主役で、スラブ帯による横の分節はしない */
+                vfin・vstripe は縦が主役で、スラブ帯による横の分節はしない
+                grid=小窓グリッド / hband=横帯窓 / hstripe=横帯ストライプ / checker=市松ガラス
+                （シンプル枠。横方向のパターンが側面にもそのまま回るよう側面出し分けの対象外） */
       var LOOKS = [
         { id:"white-black", name:"白コンクリ×黒ガラス",   style:"frame",   wall:"#e9e3d5", glassA:"#454f58", glassB:"#13181d", band:"#cfc6b2", frame:"rgba(60,54,42,0.45)",  winW:0.8,  winH:0.52, metalness:0.12, roughness:0.5,  lit:"#fff3cf", w:3 },
         { id:"white-blue",  name:"白コンクリ×青ガラス",   style:"frame",   wall:"#e7e2d8", glassA:"#8fc3e8", glassB:"#2e5f8f", band:"#cdc5b4", frame:"rgba(52,60,66,0.45)",  winW:0.8,  winH:0.52, metalness:0.2,  roughness:0.42, lit:"#eaf6ff", w:3 },
@@ -2525,7 +2593,23 @@
         { id:"blackmetal",  name:"ブラックメタル",       style:"metal",   wall:"#1d2025", glassA:"#66727d", glassB:"#0b0e12", band:"#101216", frame:"rgba(190,208,226,0.4)",  winW:0.68, winH:0.62, metalness:0.35, roughness:0.42, lit:"#bfe0ff", w:3 },
         { id:"whitefin-blue", name:"白フィン×青ガラス",   style:"vfin",    wall:"#3a6a94", glassA:"#a8d2f2", glassB:"#1e4568", band:"#ece9e0", frame:"rgba(40,48,54,0.5)",    metalness:0.25, roughness:0.38, lit:"#d8f1ff", w:3 },
         { id:"silverfin",   name:"シルバーフィン×ガラス", style:"vfin",    wall:"#4a5a66", glassA:"#c2d4e0", glassB:"#232e36", band:"#b7bcc2", frame:"rgba(52,58,64,0.45)",   metalness:0.38, roughness:0.35, lit:"#eaf2ff", w:2 },
-        { id:"whitestripe", name:"白帯ストライプ×濃青ガラス", style:"vstripe", wall:"#e9e6dc", glassA:"#5f8fc2", glassB:"#142c4d", band:"#e9e6dc", frame:"rgba(52,56,60,0.45)", metalness:0.2, roughness:0.45, lit:"#d8f1ff", w:3 }
+        { id:"whitestripe", name:"白帯ストライプ×濃青ガラス", style:"vstripe", wall:"#e9e6dc", glassA:"#5f8fc2", glassB:"#142c4d", band:"#e9e6dc", frame:"rgba(52,56,60,0.45)", metalness:0.2, roughness:0.45, lit:"#d8f1ff", w:3 },
+        /* シンプル枠（2026-11-24 ユーザー要望）: 周りの建物で見かける、すっきりした
+           外壁をモチーフにした4様式×色違い2種。派手な特殊枠ではなく、地味めな
+           既存外観と同程度の重み（w:2〜3）でそこそこ出やすくする。
+           grid=小さな正方形窓の格子 / hband=フロアごとの横帯窓 /
+           hstripe=パネルと濃色の太い横帯のストライプ（斜めスリット窓）/
+           checker=市松模様のガラスカーテンウォール。
+           いずれも色は既存フィールド（wall/glassA/glassB/band/frame/lit）だけで
+           表現し、spec の保存項目を増やさずに往復できるようにする */
+        { id:"grid-white-teal", name:"白グリッド×青緑ガラス", style:"grid", wall:"#edeee9", glassA:"#a9d2c8", glassB:"#2e6b64", band:"#d8dad2", frame:"rgba(52,60,58,0.42)", metalness:0.18, roughness:0.45, lit:"#d9fff4", w:3 },
+        { id:"grid-gray-blue", name:"薄グレーグリッド×青ガラス", style:"grid", wall:"#dfe3e6", glassA:"#aecfeb", glassB:"#33597f", band:"#c6ccd1", frame:"rgba(44,54,64,0.42)", metalness:0.2, roughness:0.42, lit:"#d8f1ff", w:2 },
+        { id:"hband-white-bluegray", name:"白×ブルーグレー横帯", style:"hband", wall:"#eef0f0", glassA:"#b9d2e4", glassB:"#4a6d8a", band:"#d5d9db", frame:"rgba(48,58,66,0.4)", metalness:0.22, roughness:0.4, lit:"#eaf6ff", w:3 },
+        { id:"hband-warm-teal", name:"ウォームグレー×青緑横帯", style:"hband", wall:"#e8e2d4", glassA:"#a3ccc2", glassB:"#2c5f5a", band:"#d2c9b4", frame:"rgba(58,56,46,0.4)", metalness:0.18, roughness:0.45, lit:"#d9fff4", w:2 },
+        { id:"hstripe-beige-navy", name:"ベージュ×濃紺ストライプ", style:"hstripe", wall:"#d9c7a7", glassA:"#3d5a78", glassB:"#101e33", band:"#c9b48d", frame:"rgba(30,28,20,0.45)", metalness:0.2, roughness:0.48, lit:"#ffeec2", w:3 },
+        { id:"hstripe-white-charcoal", name:"白×チャコールストライプ", style:"hstripe", wall:"#eceae4", glassA:"#5a6a78", glassB:"#161c22", band:"#d8d5cc", frame:"rgba(40,44,48,0.45)", metalness:0.22, roughness:0.45, lit:"#eaf2ff", w:2 },
+        { id:"checker-blue-white", name:"青白市松ガラス", style:"checker", wall:"#eef3f6", glassA:"#7fb2dd", glassB:"#24507e", band:"#c9d6de", frame:"rgba(28,44,60,0.4)", metalness:0.28, roughness:0.32, lit:"#d8f1ff", w:3 },
+        { id:"checker-teal-white", name:"青緑白市松ガラス", style:"checker", wall:"#eef4f1", glassA:"#7fc4b5", glassB:"#1f5a52", band:"#c8d8d2", frame:"rgba(24,44,40,0.4)", metalness:0.28, roughness:0.32, lit:"#dcffe9", w:2 }
       ];
       /* 外観の抽選: 明〜中明度を厚く、暗色（ブラックメタルに統合、旧3種分の w:3）は少数派 */
       function pickLook(){
@@ -2559,6 +2643,9 @@
          繭（diagrid）は専用外観なので出し分けしない */
       function sideVariantLook(look){
         if (!look || look.style === "diagrid") return null;
+        /* シンプル枠は横帯・市松などの横方向パターンが側面にも連続してこそ
+           形になるため、様式を変える出し分けはしない（正面と同じ外観で回す） */
+        if (look.style === "grid" || look.style === "hband" || look.style === "hstripe" || look.style === "checker") return null;
         var v = {};
         for (var key in look) v[key] = look[key];
         if (look.style === "vfin"){
@@ -2588,6 +2675,24 @@
         return fmt(b) + "億円";
       }
       function $(id){ return document.getElementById(id); }
+
+      /* 描画バッファの総ピクセル数キャップ（PCなど大画面の軽量化）:
+         描画ピクセル数（CSS幅×CSS高さ×pixelRatio²）が上限（約190万）を超える
+         場合だけ pixelRatio を下げて上限内に収める。スマホなど小さい画面では
+         従来通り（上限1.5）で画質・表示は変わらない。全3Dレンダラーの
+         リサイズ経路で使う（サムネイル用は110×180固定で上限に遠く及ばない）。
+         上限は 2026-11-24 に約280万→約190万へ引き下げ（大画面のみ約32%減） */
+      var PX_CAP = 1900000;
+      function cappedPR(w, h){
+        var pr = Math.min(window.devicePixelRatio || 1, 1.5);
+        var px = w * h * pr * pr;
+        if (px > PX_CAP) pr = Math.max(0.5, pr * Math.sqrt(PX_CAP / px));
+        return pr;
+      }
+      function fitRenderer(r, w, h){
+        r.setPixelRatio(cappedPR(w, h));
+        r.setSize(w, h);
+      }
 
       /* 建設費: 累計（億円） */
       function buildCost(floors){
@@ -3200,6 +3305,315 @@
         return { x0:x0, z0:z0, x1:x1, z1:z1, w:x1 - x0, d:z1 - z0,
                  cx:(x0 + x1) / 2, cz:(z0 + z1) / 2, coverage:(chosen.cov != null ? chosen.cov : null) };
       }
+      /* 平面ポリゴン（[x,z] の頂点列）の符号付き面積 */
+      function planAreaOf(plan){
+        var a = 0;
+        for (var i = 0; i < plan.length; i++){
+          var p = plan[i], q = plan[(i + 1) % plan.length];
+          a += p[0] * q[1] - q[0] * p[1];
+        }
+        return a / 2;
+      }
+      /* ================= 敷地なぞり型: 所有地の輪郭計算 =================
+         抽選で敷地なぞり型が選ばれたランでだけ呼ばれる（それ以外では一切走らない）。
+         所有区画の和集合をラスタ化し、道路などの小ギャップを埋めて（クロージング）
+         最大の連結成分の輪郭を取り、Douglas-Peucker で単純化する（ずれ上限5m）。
+         セットバック段は輪郭マスクを内側へ収縮（エロージョン）して作るため、
+         上の段が下の段や敷地からはみ出すことはない。
+         返り値: [下段, 中段?, 上段?] の頂点列（タワー座標・絶対座標）か、
+         輪郭が特徴的でない／細すぎる／小さすぎる場合の null */
+      function computeSitePlans(){
+        if (!G || !G.real || !G.lots) return null;
+        var frame = ownedSiteFrame();
+        if (!frame || !frame.polys.length || !(frame.area >= 400)) return null;
+        var maxDim = Math.max(frame.w, frame.d);
+        if (!(maxDim >= 30)) return null;
+        var cs = Math.max(1.25, Math.min(3.5, maxDim / 200));   /* セル一辺 [m] */
+        var nx = Math.max(1, Math.ceil(frame.w / cs));
+        var nz = Math.max(1, Math.ceil(frame.d / cs));
+        if (nx * nz > 120000){
+          cs = Math.sqrt(frame.w * frame.d / 120000);
+          nx = Math.max(1, Math.ceil(frame.w / cs));
+          nz = Math.max(1, Math.ceil(frame.d / cs));
+        }
+        var ox = frame.minX, oz = frame.minZ;
+        var mask = new Uint8Array(nx * nz);
+        /* スキャンライン塗りつぶし（siteInscribedRect と同じ方式） */
+        for (var j = 0; j < nz; j++){
+          var zc = oz + (j + 0.5) * cs;
+          var xs = [];
+          for (var pi = 0; pi < frame.polys.length; pi++){
+            var poly = frame.polys[pi];
+            for (var e = 0; e < poly.length; e++){
+              var a = poly[e], b = poly[(e + 1) % poly.length];
+              if ((a[1] > zc) !== (b[1] > zc)) xs.push(a[0] + (zc - a[1]) / (b[1] - a[1]) * (b[0] - a[0]));
+            }
+          }
+          if (xs.length < 2) continue;
+          xs.sort(function(p, q){ return p - q; });
+          for (var k = 0; k + 1 < xs.length; k += 2){
+            var i0 = Math.max(0, Math.ceil((xs[k] - ox) / cs - 0.5));
+            var i1 = Math.min(nx - 1, Math.floor((xs[k + 1] - ox) / cs - 0.5));
+            for (var i2 = i0; i2 <= i1; i2++) mask[j * nx + i2] = 1;
+          }
+        }
+        /* 膨張／収縮（分離型スライド、siteInscribedRect と同じ方式） */
+        function slideM(arr, r, isMax){
+          var n = arr.length, out = new Uint8Array(n);
+          for (var c = 0; c < n; c++){
+            var v = isMax ? 0 : 1;
+            for (var t = Math.max(0, c - r); t <= Math.min(n - 1, c + r); t++){
+              if (isMax){ if (arr[t]){ v = 1; break; } }
+              else if (!arr[t]){ v = 0; break; }
+            }
+            out[c] = v;
+          }
+          return out;
+        }
+        function morphM(src, r, isMax){
+          var tmp = new Uint8Array(nx * nz), dst = new Uint8Array(nx * nz), c2, r2;
+          for (r2 = 0; r2 < nz; r2++) tmp.set(slideM(src.subarray(r2 * nx, r2 * nx + nx), r, isMax), r2 * nx);
+          for (c2 = 0; c2 < nx; c2++){
+            var col = new Uint8Array(nz);
+            for (r2 = 0; r2 < nz; r2++) col[r2] = tmp[r2 * nx + c2];
+            col = slideM(col, r, isMax);
+            for (r2 = 0; r2 < nz; r2++) dst[r2 * nx + c2] = col[r2];
+          }
+          return dst;
+        }
+        function erodeBy(m, distM){
+          var r = Math.max(1, Math.round(distM / cs));
+          return morphM(m, r, false);
+        }
+        /* クロージングで道路・小ギャップ（約14m以下）を埋め、街区としての輪郭にする */
+        var rd = Math.max(1, Math.round(7 / cs));
+        var closed = morphM(morphM(mask, rd, true), rd, false);
+        /* 最大の連結成分だけを残す（所有地は隣接購入でつながっている前提） */
+        var compMask = (function(){
+          var seen = new Uint8Array(nx * nz), best = null, stack = [];
+          for (var s0 = 0; s0 < nx * nz; s0++){
+            if (!closed[s0] || seen[s0]) continue;
+            var cells = [];
+            stack.length = 0; stack.push(s0); seen[s0] = 1;
+            while (stack.length){
+              var c = stack.pop(); cells.push(c);
+              var cx = c % nx, cy = (c / nx) | 0;
+              if (cx > 0 && closed[c - 1] && !seen[c - 1]){ seen[c - 1] = 1; stack.push(c - 1); }
+              if (cx < nx - 1 && closed[c + 1] && !seen[c + 1]){ seen[c + 1] = 1; stack.push(c + 1); }
+              if (cy > 0 && closed[c - nx] && !seen[c - nx]){ seen[c - nx] = 1; stack.push(c - nx); }
+              if (cy < nz - 1 && closed[c + nx] && !seen[c + nx]){ seen[c + nx] = 1; stack.push(c + nx); }
+            }
+            if (!best || cells.length > best.length) best = cells;
+          }
+          if (!best || !best.length) return null;
+          var out = new Uint8Array(nx * nz);
+          best.forEach(function(c){ out[c] = 1; });
+          return out;
+        })();
+        if (!compMask) return null;
+        /* 穴埋め: 外周から到達できない空セルは内側の穴として埋める */
+        (function(){
+          var seen = new Uint8Array(nx * nz), stack = [];
+          function seed(idx){ if (!compMask[idx] && !seen[idx]){ seen[idx] = 1; stack.push(idx); } }
+          var i3, j3;
+          for (i3 = 0; i3 < nx; i3++){ seed(i3); seed((nz - 1) * nx + i3); }
+          for (j3 = 0; j3 < nz; j3++){ seed(j3 * nx); seed(j3 * nx + nx - 1); }
+          while (stack.length){
+            var c = stack.pop();
+            var cx = c % nx, cy = (c / nx) | 0;
+            if (cx > 0) seed(c - 1);
+            if (cx < nx - 1) seed(c + 1);
+            if (cy > 0) seed(c - nx);
+            if (cy < nz - 1) seed(c + nx);
+          }
+          for (var t2 = 0; t2 < nx * nz; t2++) if (!compMask[t2] && !seen[t2]) compMask[t2] = 1;
+        })();
+        /* マスクの境界ループ（セル辺の有向エッジをたどる）→ 単純化した頂点列。
+           複数ループがある場合は最大面積のものを採る */
+        function outlineOf(m){
+          var edges = {};
+          function addEdge(iA, jA, iB, jB){
+            var kk = iA + "," + jA;
+            (edges[kk] = edges[kk] || []).push([iB, jB]);
+          }
+          for (var j = 0; j < nz; j++) for (var i = 0; i < nx; i++){
+            if (!m[j * nx + i]) continue;
+            if (j === 0 || !m[(j - 1) * nx + i]) addEdge(i, j, i + 1, j);
+            if (j === nz - 1 || !m[(j + 1) * nx + i]) addEdge(i + 1, j + 1, i, j + 1);
+            if (i === 0 || !m[j * nx + i - 1]) addEdge(i, j + 1, i, j);
+            if (i === nx - 1 || !m[j * nx + i + 1]) addEdge(i + 1, j, i + 1, j + 1);
+          }
+          var bestLoop = null, bestArea = -1;
+          Object.keys(edges).forEach(function(startKey){
+            while (edges[startKey] && edges[startKey].length){
+              var sp = startKey.split(",");
+              var ci = parseInt(sp[0], 10), cj = parseInt(sp[1], 10);
+              var si = ci, sj = cj, loop = [], guard = 0, okWalk = true;
+              do {
+                loop.push([ox + ci * cs, oz + cj * cs]);
+                var lst = edges[ci + "," + cj];
+                if (!lst || !lst.length){ okWalk = false; break; }
+                var nxt = lst.pop();
+                ci = nxt[0]; cj = nxt[1];
+                if (++guard > nx * nz * 2 + 32){ okWalk = false; break; }
+              } while (ci !== si || cj !== sj);
+              if (okWalk && loop.length >= 4){
+                var ar = Math.abs(planAreaOf(loop));
+                if (ar > bestArea){ bestArea = ar; bestLoop = loop; }
+              }
+            }
+          });
+          if (!bestLoop) return null;
+          return simplifyLoop(bestLoop);
+        }
+        function simplifyLoop(loop){
+          /* 共線点の除去 */
+          var n = loop.length, pts = [];
+          for (var i = 0; i < n; i++){
+            var p0 = loop[(i - 1 + n) % n], p1 = loop[i], p2 = loop[(i + 1) % n];
+            var cr = (p1[0] - p0[0]) * (p2[1] - p1[1]) - (p1[1] - p0[1]) * (p2[0] - p1[0]);
+            if (Math.abs(cr) > 1e-9) pts.push(p1);
+          }
+          if (pts.length < 4) return null;
+          /* Douglas-Peucker（閉ループを先頭固定の開チェーンとして処理）。
+             ε は輪郭が敷地や下段からはみ出す量の上限になるため 5m で頭打ちにする。
+             頂点が多すぎる場合は「落としても形のずれが 4m 以下」の頂点だけを
+             間引いて最大20頂点に収め、それ以上は形の忠実さを優先して頂点数を
+             許容する（ずれの上限は ε の 5m のままに保たれる） */
+          var eps = Math.min(5, Math.max(2.0, cs * 1.6));
+          var res = dpSimplify(pts, eps);
+          while (res.length > 20){
+            var dropI = -1, dropD = Infinity;
+            for (var di = 0; di < res.length; di++){
+              var dp0 = res[(di - 1 + res.length) % res.length];
+              var dp1 = res[di];
+              var dp2 = res[(di + 1) % res.length];
+              var dd = distToSeg(dp1[0], dp1[1], dp0[0], dp0[1], dp2[0], dp2[1]);
+              if (dd < dropD){ dropD = dd; dropI = di; }
+            }
+            if (dropI < 0 || dropD > 4) break;
+            res.splice(dropI, 1);
+          }
+          if (!res || res.length < 4) return null;
+          return res;
+        }
+        function dpSimplify(pts, eps){
+          var chain = pts.concat([pts[0]]);
+          var keep = new Uint8Array(chain.length);
+          keep[0] = 1; keep[chain.length - 1] = 1;
+          var stack = [[0, chain.length - 1]];
+          while (stack.length){
+            var seg = stack.pop(), aI = seg[0], bI = seg[1];
+            var ax = chain[aI][0], az = chain[aI][1], bx = chain[bI][0], bz = chain[bI][1];
+            var maxD = -1, maxI = -1;
+            for (var i = aI + 1; i < bI; i++){
+              var d = distToSeg(chain[i][0], chain[i][1], ax, az, bx, bz);
+              if (d > maxD){ maxD = d; maxI = i; }
+            }
+            if (maxI > 0 && maxD > eps){
+              keep[maxI] = 1;
+              stack.push([aI, maxI]);
+              stack.push([maxI, bI]);
+            }
+          }
+          var res = [];
+          for (var k2 = 0; k2 < chain.length - 1; k2++) if (keep[k2]) res.push(chain[k2]);
+          return res;
+        }
+        function planBBox(plan){
+          var mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
+          plan.forEach(function(v){
+            if (v[0] < mnx) mnx = v[0];
+            if (v[0] > mxx) mxx = v[0];
+            if (v[1] < mnz) mnz = v[1];
+            if (v[1] > mxz) mxz = v[1];
+          });
+          return { w:mxx - mnx, d:mxz - mnz };
+        }
+        function planPerim(plan){
+          var s = 0;
+          for (var i = 0; i < plan.length; i++){
+            var p = plan[i], q = plan[(i + 1) % plan.length];
+            s += Math.hypot(q[0] - p[0], q[1] - p[1]);
+          }
+          return s;
+        }
+        /* 下段: 境界から少し内側へ寄せ（単純化の誤差ぶんの安全マージン）、
+           面積が総所有面積の60%を超える場合は収縮を強めて収める */
+        var inset0 = Math.min(10, Math.max(6, Math.min(frame.w, frame.d) * 0.06));
+        var cur = erodeBy(compMask, inset0);
+        var plan0 = null, area0 = 0;
+        for (var tries = 0; tries < 5; tries++){
+          plan0 = outlineOf(cur);
+          if (!plan0) return null;
+          area0 = Math.abs(planAreaOf(plan0));
+          if (area0 <= 0.6 * frame.area) break;
+          cur = erodeBy(cur, 2.5);
+          plan0 = null;
+        }
+        if (!plan0) return null;
+        /* 特徴判定: 四角いだけの輪郭では発動しない */
+        var bb0 = planBBox(plan0), per0 = planPerim(plan0);
+        if (plan0.length < 5) return null;                       /* 頂点5以上（＝四角形でない） */
+        if (area0 / (bb0.w * bb0.d) > 0.965) return null;        /* 外接矩形とほぼ同じ＝ただの箱 */
+        if (bb0.w < 15 || bb0.d < 15 || area0 < 180) return null;
+        if (2 * area0 / per0 < 9) return null;                   /* 薄すぎる輪郭は壁状になるので不採用 */
+        var plans = [plan0];
+        /* セットバック段: さらに内側へ収縮した輪郭を最大2段まで重ねる。
+           収縮量には単純化のずれ上限（上下段ぶんで最大10m）＋余裕を見込み、
+           単純化後の頂点列でも上の段が下の段の内側に収まるようにする */
+        var stepM = Math.min(12, Math.max(4, Math.min(bb0.w, bb0.d) * rand(0.08, 0.13))) + 11;
+        var mPrev = cur;
+        for (var t = 0; t < 2; t++){
+          var mNext = erodeBy(mPrev, stepM);
+          var pl = outlineOf(mNext);
+          if (!pl || pl.length < 4) break;
+          var ar2 = Math.abs(planAreaOf(pl));
+          if (ar2 < 0.26 * area0 || 2 * ar2 / planPerim(pl) < 8) break;
+          plans.push(pl);
+          mPrev = mNext;
+        }
+        /* 最終確認: 全頂点と全辺の中点が、所有地の内側か境界から10m以内にあること。
+           所有区画が未所有地を囲むような大きな敷地では、尖った窪みの先端の頂点が
+           敷地から浮くことがある。浮く頂点は落として丸め（最大3点まで）、
+           直らなければその段を諦め、下段も直らなければ形自体を選ばない */
+        function nearSite(x, z){
+          if (pointInOwnedSite(frame, x, z)) return true;
+          var md = Infinity;
+          for (var pi2 = 0; pi2 < frame.polys.length; pi2++){
+            var poly2 = frame.polys[pi2];
+            for (var e2 = 0; e2 < poly2.length; e2++){
+              var a2 = poly2[e2], b2 = poly2[(e2 + 1) % poly2.length];
+              var d2 = distToSeg(x, z, a2[0], a2[1], b2[0], b2[1]);
+              if (d2 < md) md = d2;
+            }
+          }
+          return md <= 10;
+        }
+        function planBadIndex(plan){
+          for (var i = 0; i < plan.length; i++){
+            var p = plan[i], q = plan[(i + 1) % plan.length];
+            if (!nearSite(p[0], p[1])) return i;
+            if (!nearSite((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)) return i;
+          }
+          return -1;
+        }
+        for (var ti = 0; ti < plans.length; ti++){
+          var drops = 0;
+          while (drops < 3 && plans[ti].length > (ti === 0 ? 5 : 4)){
+            var bad = planBadIndex(plans[ti]);
+            if (bad < 0) break;
+            plans[ti].splice(bad, 1);
+            drops++;
+          }
+          if (planBadIndex(plans[ti]) >= 0){
+            if (ti === 0) return null;
+            plans.length = ti;   /* この段より上は諦める */
+            break;
+          }
+        }
+        return plans;
+      }
       /* 建物の平面投影（全パーツの外接矩形＝footprint、ツインは2棟合計）を、
          購入した敷地の内側に収める。主基準は「所有unionに内接する最大矩形」＋
          「面積は総所有面積の60%以下」で、中心は内接矩形の中心に置く。
@@ -3211,6 +3625,33 @@
         if (!frame || !frame.polys.length) return 1;
         var box = shapeFootprintBox(shape);
         if (!box) return 1;
+        if (shape.siteNative){
+          /* 敷地なぞり型: 平面は所有地の輪郭そのもの（収縮済み）なので、内接矩形への
+             押し込みはしない。面積上限（総所有面積の60%）だけを再確認し、
+             超える場合のみ輪郭を中心まわりに一様縮小する */
+          var sN = 1, p0 = null;
+          shape.parts.forEach(function(p){
+            if (p.kind === "poly" && p.plan && (!p0 || (p.from || 0) < (p0.from || 0))) p0 = p;
+          });
+          if (p0 && frame.area > 0){
+            var a0 = Math.abs(planAreaOf(p0.plan));
+            if (a0 > 0.6 * frame.area) sN = Math.sqrt(0.6 * frame.area / a0);
+          }
+          if (sN < 1){
+            shape.parts.forEach(function(p){
+              if (p.kind !== "poly" || !p.plan) return;
+              p.plan = p.plan.map(function(v){ return [v[0] * sN, v[1] * sN]; });
+              if (p.w != null) p.w *= sN;
+              if (p.d != null) p.d *= sN;
+            });
+            shape.baseW *= sN; shape.baseD *= sN;
+            var nbN = shapeFootprintBox(shape);
+            if (nbN){ shape.footW = nbN.w; shape.footD = nbN.d; }
+            if (shape.baseW > 0) shape.slenderness = shape.designHeight / shape.baseW;
+          }
+          shape.siteFit = sN;
+          return sN;
+        }
         var s, cxT, czT;
         var rect = null;
         try{ rect = siteInscribedRect(frame); }catch(e){ rect = null; }
@@ -3955,6 +4396,7 @@
               if (p.rotExtra) o.e = rankSpecNum(p.rotExtra, dec);
               if (p.radial) o.a = p.radial;
               if (p.topRatio != null) o.p = rankSpecNum(p.topRatio, dec);
+              if (p.plan) o.q = p.plan.map(function(v){ return [rankSpecNum(v[0], dec), rankSpecNum(v[1], dec)]; });   /* 敷地なぞり型の輪郭（相対頂点列） */
               if (!dropTint && p.tint != null && p.tint !== 1) o.n = rankSpecNum(p.tint, dec);
               if (p.matIndex) o.m = p.matIndex;
               var fl = 0;
@@ -4041,7 +4483,7 @@
             });
           } else {
             mat = specFacadeMat(part, variants, look);
-            if (part.kind === "wedge") mat.side = THREE.DoubleSide;   /* 本編と同じく面欠け保険 */
+            if (part.kind === "wedge" || part.kind === "poly") mat.side = THREE.DoubleSide;   /* 本編と同じく面欠け保険 */
             if (sideVariantsG && part.kind === "box" && part.role === "tier"){
               var sideMatG = specFacadeMat(part, sideVariantsG, sideLookG);
               var topMatG = new THREE.MeshStandardMaterial({
@@ -4086,6 +4528,7 @@
             if (o.rr != null) p.r = o.rr;
             if (o.a) p.radial = o.a;
             if (o.p != null) p.topRatio = o.p;
+            if (o.q) p.plan = o.q.map(function(v){ return [(v && v[0]) || 0, (v && v[1]) || 0]; });
             if (o.g){ if (o.g & 1) p.fitting = true; if (o.g & 2) p.solidTrim = true; if (o.g & 4) p.crownGlass = true; }
             return p;
           });
@@ -4264,6 +4707,7 @@
         rr.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));   /* 高解像度環境での過剰描画を抑える */
         rr.shadowMap.enabled = true;
         rr.shadowMap.type = THREE.PCFShadowMap;
+        rr.shadowMap.autoUpdate = false;   /* 太陽・シーンとも固定表示なので、記録を開いた直後だけ影を描く（recTick の shadowN） */
         if (THREE.SRGBColorSpace !== undefined && "outputColorSpace" in rr) rr.outputColorSpace = THREE.SRGBColorSpace;
         else if (THREE.sRGBEncoding !== undefined) rr.outputEncoding = THREE.sRGBEncoding;
         rr.toneMapping = THREE.ACESFilmicToneMapping;
@@ -4327,7 +4771,7 @@
         var cityGroup = new THREE.Group();
         rscene.add(cityGroup);
 
-        rec = { renderer:rr, scene:rscene, camera:rcam, controls:rctrl, sun:sun, group:group, cityGroup:cityGroup, cityKey:null, raf:0, open:false };
+        rec = { renderer:rr, scene:rscene, camera:rcam, controls:rctrl, sun:sun, group:group, cityGroup:cityGroup, cityKey:null, raf:0, open:false, shadowN:0 };
         window.addEventListener("resize", recResize);
       }
       function recDisposeTower(){
@@ -4526,7 +4970,7 @@
         var wrap = $("record-view");
         var w = wrap.clientWidth, h = wrap.clientHeight;
         if (w < 10 || h < 10) return;
-        rec.renderer.setSize(w, h);
+        fitRenderer(rec.renderer, w, h);
         rec.camera.aspect = w / h;
         rec.camera.updateProjectionMatrix();
       }
@@ -4555,6 +4999,7 @@
         if (document.hidden){ rec.raf = requestAnimationFrame(recTick); return; }   /* 非表示中は描かない */
         try{
           rec.controls.update();
+          if (rec.shadowN > 0){ rec.renderer.shadowMap.needsUpdate = true; rec.shadowN--; }   /* 開いた直後の数フレームだけ影を描き、以降は使い回す */
           rec.renderer.render(rec.scene, rec.camera);
         }catch(e){ /* 記録詳細の描画失敗で本体に影響させない */ }
         rec.raf = requestAnimationFrame(recTick);
@@ -4587,6 +5032,7 @@
           var recTexel = Math.max(2 * R, td.height + 500) / 2048;
           rec.sun.shadow.normalBias = Math.min(8, Math.max(1.5, recTexel * 2.5 / 0.767));
           rec.controls.autoRotate = !REDUCED;
+          rec.shadowN = 3;   /* 新しいタワー・街並み・影フラスタムを影マップへ反映する */
           rec.open = true;
           recFrameCamera(td);
           cancelAnimationFrame(rec.raf);
@@ -5826,10 +6272,14 @@
         var wall = look.wall || look.base;
         var style = look.style || "curtain";
         var cfg = {
-          glassy: style === "curtain" || style === "diagrid" || style === "vfin" || style === "vstripe",
+          glassy: style === "curtain" || style === "diagrid" || style === "vfin" || style === "vstripe" || style === "checker",
           diagrid: style === "diagrid",
           vfin: style === "vfin",
           vstripe: style === "vstripe",
+          grid: style === "grid",
+          hband: style === "hband",
+          hstripe: style === "hstripe",
+          checker: style === "checker",
           wall: wall,
           band: look.band || mixHex(wall, "#ffffff", 0.1),
           frame: look.frame || "rgba(18,26,34,0.45)",
@@ -5838,7 +6288,7 @@
           vlines: style === "metal",
           lit: look.lit
         };
-        if (cfg.glassy){
+        if (cfg.glassy || cfg.grid || cfg.hband || cfg.hstripe){
           cfg.gA = look.glassA || mixHex(wall, "#eaf4ff", 0.5);
           cfg.gB = look.glassB || mixHex(wall, "#101c28", 0.28);
         } else {
@@ -5963,6 +6413,177 @@
           }catch(e){ /* 異方性フィルタは任意 */ }
           return { map: txV, emissiveMap: etxV, cv: cv, ev: ev };
         }
+        if (cfg.grid || cfg.hband || cfg.hstripe || cfg.checker){
+          /* シンプル枠4様式（2026-11-24）: 1タイル=3スパン×4フロアの約束は
+             既存様式と同じ。点灯は lit.grid（フロア×スパン単位）と設備階
+             （mech）をそのまま使い、夜は様式ごとのガラス部分だけが灯る */
+          var finishSimple = function(){
+            var txS = new THREE.CanvasTexture(cv);
+            txS.wrapS = txS.wrapT = THREE.RepeatWrapping;
+            var etxS = new THREE.CanvasTexture(ev);
+            etxS.wrapS = etxS.wrapT = THREE.RepeatWrapping;
+            if (THREE.SRGBColorSpace !== undefined){ txS.colorSpace = THREE.SRGBColorSpace; etxS.colorSpace = THREE.SRGBColorSpace; }
+            try{
+              if (renderer && renderer.capabilities){
+                var anS = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+                txS.anisotropy = anS; etxS.anisotropy = anS;
+              }
+            }catch(e){ /* 異方性フィルタは任意 */ }
+            return { map: txS, emissiveMap: etxS, cv: cv, ev: ev };
+          };
+          var sr, ss;
+          if (cfg.grid){
+            /* 小窓グリッド: セル（スパン×フロア）の中に小さな正方形窓を
+               3列×2段で整然と並べる。壁が主役のクリーンな外観 */
+            var gCols = 3, gRows = 2;
+            for (sr = 0; sr < FACADE_FLOORS; sr++){
+              for (ss = 0; ss < FACADE_SPANS; ss++){
+                var gx0 = ss * spanW, gy0 = sr * floorH;
+                if (sr === lit.mech){
+                  g.fillStyle = cfg.band; g.fillRect(gx0 + 6, gy0 + 6, spanW - 12, floorH - 12);
+                  g.strokeStyle = "rgba(0,0,0,0.3)"; g.lineWidth = 2;
+                  for (var gl2 = gy0 + 18; gl2 < gy0 + floorH - 8; gl2 += 16){ g.beginPath(); g.moveTo(gx0 + 10, gl2); g.lineTo(gx0 + spanW - 10, gl2); g.stroke(); }
+                  continue;
+                }
+                var subW = spanW / gCols, subH = floorH / gRows;
+                var winSq = Math.min(subW, subH) * 0.54;
+                for (var gc = 0; gc < gCols; gc++){
+                  for (var gr2 = 0; gr2 < gRows; gr2++){
+                    var gwx = gx0 + gc * subW + (subW - winSq) / 2;
+                    var gwy = gy0 + gr2 * subH + (subH - winSq) / 2;
+                    var ggr = g.createLinearGradient(gwx, gwy, gwx + winSq, gwy + winSq);
+                    ggr.addColorStop(0, cfg.gA); ggr.addColorStop(1, cfg.gB);
+                    g.fillStyle = ggr; g.fillRect(gwx, gwy, winSq, winSq);
+                    g.fillStyle = "rgba(255,255,255,0.16)";
+                    g.beginPath();
+                    g.moveTo(gwx, gwy + winSq); g.lineTo(gwx + winSq * 0.55, gwy); g.lineTo(gwx + winSq * 0.85, gwy); g.lineTo(gwx + winSq * 0.3, gwy + winSq);
+                    g.closePath(); g.fill();
+                    g.strokeStyle = cfg.frame; g.lineWidth = 2; g.strokeRect(gwx, gwy, winSq, winSq);
+                    if (lit.grid[sr][ss] && Math.random() < 0.92){
+                      eg.fillStyle = cfg.lit; eg.globalAlpha = rand(0.8, 1);
+                      eg.fillRect(gwx * ES, gwy * ES, winSq * ES, winSq * ES); eg.globalAlpha = 1;
+                    }
+                  }
+                }
+              }
+            }
+            g.strokeStyle = cfg.frame; g.lineWidth = 3;
+            for (var gm = 0; gm <= FACADE_SPANS; gm++){ g.beginPath(); g.moveTo(gm * spanW, 0); g.lineTo(gm * spanW, S); g.stroke(); }
+            g.lineWidth = 2;
+            for (var gm2 = 0; gm2 <= FACADE_FLOORS; gm2++){ g.beginPath(); g.moveTo(0, gm2 * floorH); g.lineTo(S, gm2 * floorH); g.stroke(); }
+          } else if (cfg.hband){
+            /* 横帯窓: フロアごとに幅いっぱいの窓帯が続き、下部は壁の帯。
+               縦の割付は細いマリオンだけにして横の流れを主役にする */
+            for (sr = 0; sr < FACADE_FLOORS; sr++){
+              var hy0 = sr * floorH;
+              var hWinTop = hy0 + 6, hWinBot = hy0 + floorH * 0.62;
+              g.fillStyle = cfg.band; g.fillRect(0, hWinBot, S, floorH - (hWinBot - hy0));
+              g.fillStyle = "rgba(0,0,0,0.16)"; g.fillRect(0, hWinBot, S, 3);
+              if (sr === lit.mech){
+                g.fillStyle = cfg.band; g.fillRect(0, hWinTop, S, hWinBot - hWinTop);
+                g.strokeStyle = "rgba(0,0,0,0.3)"; g.lineWidth = 2;
+                for (var hl = hWinTop + 12; hl < hWinBot - 4; hl += 14){ g.beginPath(); g.moveTo(4, hl); g.lineTo(S - 4, hl); g.stroke(); }
+              } else {
+                var hgr = g.createLinearGradient(0, hWinTop, 0, hWinBot);
+                hgr.addColorStop(0, cfg.gA); hgr.addColorStop(0.55, mixHex(cfg.gA, cfg.gB, 0.45)); hgr.addColorStop(1, cfg.gB);
+                g.fillStyle = hgr; g.fillRect(0, hWinTop, S, hWinBot - hWinTop);
+                g.save();
+                g.beginPath(); g.rect(0, hWinTop, S, hWinBot - hWinTop); g.clip();
+                g.fillStyle = "rgba(255,255,255,0.12)";
+                g.beginPath();
+                g.moveTo(S * 0.06, hWinBot); g.lineTo(S * 0.42, hWinTop); g.lineTo(S * 0.66, hWinTop); g.lineTo(S * 0.3, hWinBot);
+                g.closePath(); g.fill();
+                g.restore();
+                for (ss = 0; ss < FACADE_SPANS; ss++){
+                  if (lit.grid[sr][ss]){
+                    eg.fillStyle = cfg.lit; eg.globalAlpha = rand(0.8, 1);
+                    eg.fillRect(ss * spanW * ES, hWinTop * ES, spanW * ES, (hWinBot - hWinTop) * ES); eg.globalAlpha = 1;
+                  }
+                }
+              }
+              g.strokeStyle = cfg.frame; g.lineWidth = 2;
+              g.beginPath(); g.moveTo(0, hWinTop); g.lineTo(S, hWinTop); g.stroke();
+              g.beginPath(); g.moveTo(0, hWinBot); g.lineTo(S, hWinBot); g.stroke();
+              g.strokeStyle = "rgba(0,0,0,0.14)";
+              for (var hm = 1; hm < FACADE_SPANS * 2; hm++){ var hmx = hm * (spanW / 2); g.beginPath(); g.moveTo(hmx, hWinTop); g.lineTo(hmx, hWinBot); g.stroke(); }
+            }
+            g.strokeStyle = cfg.frame; g.lineWidth = 2;
+            for (var hm2 = 0; hm2 <= FACADE_FLOORS; hm2++){ g.beginPath(); g.moveTo(0, hm2 * floorH); g.lineTo(S, hm2 * floorH); g.stroke(); }
+          } else if (cfg.hstripe){
+            /* 横帯ストライプ: 上部はパネル壁、下部は濃色の太いガラス帯が
+               フロアごとに交互に重なる。ガラス帯の窓は斜めスリット */
+            for (sr = 0; sr < FACADE_FLOORS; sr++){
+              var ty0 = sr * floorH;
+              var panelH = floorH * 0.46, bandY = ty0 + panelH, bandH2 = floorH - panelH;
+              g.fillStyle = cfg.wall; g.fillRect(0, ty0, S, panelH);
+              g.strokeStyle = "rgba(0,0,0,0.13)"; g.lineWidth = 2;
+              for (var tj = 1; tj < FACADE_SPANS * 2; tj++){ var tjx = tj * (spanW / 2); g.beginPath(); g.moveTo(tjx, ty0 + 3); g.lineTo(tjx, bandY - 3); g.stroke(); }
+              if (sr === lit.mech){
+                g.fillStyle = cfg.band; g.fillRect(0, bandY, S, bandH2);
+                g.strokeStyle = "rgba(0,0,0,0.3)";
+                for (var tl = bandY + 12; tl < ty0 + floorH - 4; tl += 14){ g.beginPath(); g.moveTo(4, tl); g.lineTo(S - 4, tl); g.stroke(); }
+              } else {
+                var tgr = g.createLinearGradient(0, bandY, 0, bandY + bandH2);
+                tgr.addColorStop(0, cfg.gA); tgr.addColorStop(1, cfg.gB);
+                g.fillStyle = tgr; g.fillRect(0, bandY, S, bandH2);
+                var slitH = bandH2 * 0.52, slitW = spanW / 4 - 16, skew = 13;
+                var slitFill = mixHex(cfg.gA, "#ffffff", 0.38);
+                for (ss = 0; ss < FACADE_SPANS; ss++){
+                  for (var tk = 0; tk < 4; tk++){
+                    var tsx = ss * spanW + tk * (spanW / 4) + 8;
+                    var tsy = bandY + (bandH2 - slitH) / 2;
+                    g.fillStyle = slitFill;
+                    g.beginPath();
+                    g.moveTo(tsx + skew, tsy); g.lineTo(tsx + slitW, tsy); g.lineTo(tsx + slitW - skew, tsy + slitH); g.lineTo(tsx, tsy + slitH);
+                    g.closePath(); g.fill();
+                    if (lit.grid[sr][ss]){
+                      eg.fillStyle = cfg.lit; eg.globalAlpha = rand(0.8, 1);
+                      eg.beginPath();
+                      eg.moveTo((tsx + skew) * ES, tsy * ES); eg.lineTo((tsx + slitW) * ES, tsy * ES);
+                      eg.lineTo((tsx + slitW - skew) * ES, (tsy + slitH) * ES); eg.lineTo(tsx * ES, (tsy + slitH) * ES);
+                      eg.closePath(); eg.fill(); eg.globalAlpha = 1;
+                    }
+                  }
+                }
+              }
+              g.fillStyle = cfg.frame; g.fillRect(0, bandY - 2, S, 4);
+              g.fillStyle = "rgba(0,0,0,0.18)"; g.fillRect(0, ty0 + floorH - 3, S, 3);
+            }
+          } else {
+            /* 市松ガラス: 明セル（壁色のガラス）と青系セルの市松模様。
+               全面ガラスなので夜は灯ったセルの市松がそのまま浮かぶ */
+            var cCols = FACADE_SPANS * 2, cRows = FACADE_FLOORS * 2;
+            var cellW = S / cCols, cellH = S / cRows;
+            for (var crow = 0; crow < cRows; crow++){
+              for (var ccol = 0; ccol < cCols; ccol++){
+                var ccx = ccol * cellW, ccy = crow * cellH;
+                var isLight = (crow + ccol) % 2 === 0;
+                if (isLight){
+                  var lgr = g.createLinearGradient(ccx, ccy, ccx + cellW, ccy + cellH);
+                  lgr.addColorStop(0, mixHex(cfg.wall, "#ffffff", 0.35)); lgr.addColorStop(1, mixHex(cfg.wall, cfg.gA, 0.18));
+                  g.fillStyle = lgr; g.fillRect(ccx, ccy, cellW, cellH);
+                } else {
+                  var dgr = g.createLinearGradient(ccx, ccy, ccx + cellW, ccy + cellH);
+                  dgr.addColorStop(0, cfg.gA); dgr.addColorStop(1, cfg.gB);
+                  g.fillStyle = dgr; g.fillRect(ccx, ccy, cellW, cellH);
+                  g.fillStyle = "rgba(255,255,255,0.13)";
+                  g.beginPath();
+                  g.moveTo(ccx, ccy + cellH); g.lineTo(ccx + cellW * 0.5, ccy); g.lineTo(ccx + cellW * 0.8, ccy); g.lineTo(ccx + cellW * 0.3, ccy + cellH);
+                  g.closePath(); g.fill();
+                }
+                var cSpan = Math.floor(ccol / 2), cFloor = Math.floor(crow / 2);
+                if (lit.grid[cFloor][cSpan] && Math.random() < 0.9){
+                  eg.fillStyle = cfg.lit; eg.globalAlpha = rand(0.8, 1);
+                  eg.fillRect(ccx * ES, ccy * ES, cellW * ES, cellH * ES); eg.globalAlpha = 1;
+                }
+              }
+            }
+            g.strokeStyle = cfg.frame; g.lineWidth = 3;
+            for (var cm = 0; cm <= cCols; cm++){ g.beginPath(); g.moveTo(cm * cellW, 0); g.lineTo(cm * cellW, S); g.stroke(); }
+            for (var cm2 = 0; cm2 <= cRows; cm2++){ g.beginPath(); g.moveTo(0, cm2 * cellH); g.lineTo(S, cm2 * cellH); g.stroke(); }
+          }
+          return finishSimple();
+        }
         for (var r = 0; r < FACADE_FLOORS; r++){
           for (var s = 0; s < FACADE_SPANS; s++){
             var x0 = s * spanW, y0 = r * floorH;
@@ -6079,10 +6700,49 @@
         geo.computeVertexNormals();
         return geo;
       }
+      /* 敷地なぞり型用: 平面ポリゴン（パーツ中心からの相対座標 [x,z] の列）を
+         高さ1で押し出した角柱。原点は底面中心（baseOrigin）。側面UVの横軸は
+         周長ベースにして、箱パーツと窓の密度が大きくずれないようにする。
+         上面は ShapeUtils で三角形分割したキャップで塞ぐ */
+      function createPolyGeometry(plan, wRef){
+        var n = plan.length;
+        var pos = [], uv = [];
+        var wr = wRef > 0 ? wRef : 24;
+        var cum = [0], i;
+        for (i = 0; i < n; i++){
+          var a = plan[i], b = plan[(i + 1) % n];
+          cum.push(cum[i] + Math.hypot(b[0] - a[0], b[1] - a[1]));
+        }
+        function vtx(x, y, z, u, v){ pos.push(x, y, z); uv.push(u, v); }
+        for (i = 0; i < n; i++){
+          var pa = plan[i], pb = plan[(i + 1) % n];
+          var u0 = cum[i] / wr, u1 = cum[i + 1] / wr;
+          vtx(pa[0], 0, pa[1], u0, 0); vtx(pb[0], 0, pb[1], u1, 0); vtx(pb[0], 1, pb[1], u1, 1);
+          vtx(pa[0], 0, pa[1], u0, 0); vtx(pb[0], 1, pb[1], u1, 1); vtx(pa[0], 1, pa[1], u0, 1);
+        }
+        try{
+          var contour = plan.map(function(p){ return new THREE.Vector2(p[0], p[1]); });
+          var faces = THREE.ShapeUtils.triangulateShape(contour, []);
+          faces.forEach(function(f){
+            f.forEach(function(idx){
+              var p = plan[idx];
+              vtx(p[0], 1, p[1], p[0] / wr, p[1] / wr);
+            });
+          });
+        }catch(e){ /* キャップが作れない場合は側面のみで描く */ }
+        var geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+        geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+        geo.computeVertexNormals();
+        return geo;
+      }
       /* 生成された1パーツ分のメッシュを作る。baseOrigin=true のパーツは底面原点で縦に伸ばす */
       function createTowerMesh(part, mat){
         var geo, baseOrigin = false;
-        if (part.kind === "cone"){
+        if (part.kind === "poly"){
+          geo = createPolyGeometry(part.plan || [], part.w || 24);
+          baseOrigin = true;
+        } else if (part.kind === "cone"){
           geo = new THREE.CylinderGeometry(0, 1, 1, part.radial || 20, 1);
           geo.translate(0, 0.5, 0);
           baseOrigin = true;
@@ -6157,6 +6817,7 @@
       }
       var envCur = null;        /* init3D内（THREE読込後）に昼プリセットで初期化 */
       var envFrom = null, envTo = null, envTransT0 = 0;
+      var shadowDirtyN = 0;   /* 本編レンダラーの影マップ再描画が要る残りフレーム数（shadowMap.autoUpdate=false の手動更新用） */
       var envReview = false, envIdx = 0, envNextAt = 0;
       function applyEnv(e){
         if (!scene || !e) return;
@@ -6172,6 +6833,7 @@
             var spY = Math.max(0.25, e.sunPos[1] / spL);
             sunLight.shadow.normalBias = Math.min(6, 0.72 * 2.5 / spY);
           }
+          shadowDirtyN = Math.max(shadowDirtyN, 2);   /* 太陽の位置・色が変わったので影マップを数フレームだけ再描画する */
           if (rimLight){ rimLight.color.copy(e.rim); rimLight.intensity = e.rimInt; }
           if (renderer) renderer.toneMappingExposure = e.exposure;
           if (groundMat){ groundMat.color.copy(e.ground); groundMat.roughness = e.groundRough; groundMat.metalness = e.rain > 0.5 ? 0.35 : 0; }
@@ -6286,6 +6948,7 @@
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));   /* 高解像度環境での過剰描画を抑える */
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFShadowMap;
+        renderer.shadowMap.autoUpdate = false;   /* 影は毎フレーム描き直さない。tick3D が太陽移動・施工中・再構築直後だけ needsUpdate を立てる */
         if (THREE.SRGBColorSpace !== undefined && "outputColorSpace" in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
         else if (THREE.sRGBEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -6799,7 +7462,7 @@
           /* 斜めカット頭（wedge）は手組みジオメトリで、過去に面の向きの不整合で
              一部の面が消えて「薄い壁」に見えた前歴がある。両面描画にして、
              どの角度・環境でも面が欠けないよう保険をかける */
-          if (part.kind === "wedge") baseMat.side = THREE.DoubleSide;
+          if (part.kind === "wedge" || part.kind === "poly") baseMat.side = THREE.DoubleSide;
           if (sideVariants && part.kind === "box" && part.role === "tier"){
             /* BoxGeometry の面別マテリアル: [+x, -x, +y, -y, +z, -z]。
                側面（±x）だけ別様式、上面・下面は無地、正面・背面は通常様式 */
@@ -6875,7 +7538,7 @@
         var wrap = $("view3d");
         var w = wrap.clientWidth, h = wrap.clientHeight;
         if (w < 10 || h < 10) return;
-        renderer.setSize(w, h);
+        fitRenderer(renderer, w, h);
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
       }
@@ -7414,6 +8077,7 @@
       var _v1 = null, _v2 = null;
       var _lastVW = 0, _lastVH = 0;   /* #view3d の直近の描画サイズ（変化検出用） */
       function startMainLoop(){
+        shadowDirtyN = Math.max(shadowDirtyN, 3);   /* 画面入場直前に再構築されたシーンを影へ反映する */
         if (!renderer || mainLoopOn) return;
         if (curScreenName !== "build" && curScreenName !== "detail") return;
         mainLoopOn = true;
@@ -7769,13 +8433,22 @@
               var _cw = _vwEl.clientWidth, _chh = _vwEl.clientHeight;
               if (_cw > 10 && _chh > 10 && (_cw !== _lastVW || _chh !== _lastVH)){
                 _lastVW = _cw; _lastVH = _chh;
-                renderer.setSize(_cw, _chh);
+                fitRenderer(renderer, _cw, _chh);
                 camera.aspect = _cw / _chh;
                 camera.updateProjectionMatrix();
               }
             }
           }
-          if (renderer && scene && camera) renderer.render(scene, camera);
+          if (renderer && scene && camera){
+            /* 影マップの再描画は「太陽が動く環境遷移中」「施工アニメーション中」
+               「シーン再構築・画面入場直後（shadowDirtyN）」のフレームだけ。
+               カメラの移動・回転では影は変わらないため、静止中は再描画コストゼロ */
+            if (cons || envTo || shadowDirtyN > 0){
+              renderer.shadowMap.needsUpdate = true;
+              if (shadowDirtyN > 0) shadowDirtyN--;
+            }
+            renderer.render(scene, camera);
+          }
           if (shX || shY || shZ){ camera.position.x -= shX; camera.position.y -= shY; camera.position.z -= shZ; }
           if (!_v1){ _v1 = new THREE.Vector3(); _v2 = new THREE.Vector3(); }
           if (cons || resultMode){ $("lbl-player").style.display = "none"; }
@@ -10305,7 +10978,7 @@
            そのままの画角で PNG 化してテキストと一緒に共有する。
            フォールバック順: files付き share → textのみ share → クリップボードコピー */
         if (navigator.share && navigator.canShare && renderer && scene && camera && renderer.domElement && renderer.domElement.toBlob){
-          try { renderer.render(scene, camera); } catch(e){}   /* 描画バッファを最新フレームにしてから取り込む */
+          try { renderer.shadowMap.needsUpdate = true; renderer.render(scene, camera); } catch(e){}   /* 影も最新にしてから描画バッファを取り込む */
           renderer.domElement.toBlob(function(blob){
             var file = null;
             if (blob){
@@ -10483,7 +11156,7 @@
             });
           } else {
             mat = ttlFacadeMat(part, variants, look);
-            if (part.kind === "wedge") mat.side = THREE.DoubleSide;
+            if (part.kind === "wedge" || part.kind === "poly") mat.side = THREE.DoubleSide;
             if (sideVariantsT && part.kind === "box" && part.role === "tier"){
               var sideMatT = ttlFacadeMat(part, sideVariantsT, sideLookT);
               var topMatT = new THREE.MeshStandardMaterial({
@@ -10741,6 +11414,7 @@
             var tpY = Math.max(0.25, e.sunPos[1] / tpL);
             ttl.sun.shadow.normalBias = Math.min(7, 1.14 * 2.5 / tpY);
           }
+          ttl.shadowDirty = true;   /* 太陽が動いたので次のフレームで影マップを再描画する */
           if (ttl.rim){ ttl.rim.color.copy(e.rim); ttl.rim.intensity = e.rimInt; }
           if (ttl.renderer) ttl.renderer.toneMappingExposure = e.exposure;
           if (ttl.groundMat){ ttl.groundMat.color.copy(e.ground); ttl.groundMat.roughness = e.groundRough; ttl.groundMat.metalness = e.rain > 0.5 ? 0.35 : 0; }
@@ -10781,6 +11455,7 @@
         tr.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));   /* 高解像度環境での過剰描画を抑える */
         tr.shadowMap.enabled = true;
         tr.shadowMap.type = THREE.PCFShadowMap;
+        tr.shadowMap.autoUpdate = false;   /* タイトルの影は環境遷移中と入場直後だけ再描画する（ttlTick） */
         if (THREE.SRGBColorSpace !== undefined && "outputColorSpace" in tr) tr.outputColorSpace = THREE.SRGBColorSpace;
         else if (THREE.sRGBEncoding !== undefined) tr.outputEncoding = THREE.sRGBEncoding;
         tr.toneMapping = THREE.ACESFilmicToneMapping;
@@ -10789,7 +11464,7 @@
                 envCur: envSnapshot(ENV_PRESETS[0]), envFrom:null, envTo:null, envIdx:0, transT0:0,
                 nextAt: performance.now() + 4000,
                 angle: 0.7, dist:930, camY:330, targetY:295, h:640,
-                raf:0, running:false, lastMs:0, lastW:0, lastH:0, frames:0 };
+                raf:0, running:false, lastMs:0, lastW:0, lastH:0, frames:0, shadowDirty:true };
         tr.toneMappingExposure = ttl.envCur.exposure;
         wrap.appendChild(tr.domElement);
         var tscene = new THREE.Scene();
@@ -10848,7 +11523,7 @@
         var w = wrap.clientWidth, h = wrap.clientHeight;
         if (w < 10 || h < 10) return;
         ttl.lastW = w; ttl.lastH = h;
-        ttl.renderer.setSize(w, h);
+        fitRenderer(ttl.renderer, w, h);
         ttl.camera.aspect = w / h;
         ttl.camera.updateProjectionMatrix();
       }
@@ -10872,6 +11547,7 @@
             var cw = wrap.clientWidth, chh = wrap.clientHeight;
             if (cw > 10 && chh > 10 && (cw !== ttl.lastW || chh !== ttl.lastH)) ttlResize();
           }
+          if (ttl.envTo || ttl.frames < 3 || ttl.shadowDirty){ ttl.renderer.shadowMap.needsUpdate = true; ttl.shadowDirty = false; }
           ttl.renderer.render(ttl.scene, ttl.camera);
           ttl.frames++;
           if (REDUCED && ttl.frames > 4){ ttl.running = false; cancelAnimationFrame(ttl.raf); }
